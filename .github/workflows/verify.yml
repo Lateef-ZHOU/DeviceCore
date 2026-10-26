@@ -20,6 +20,9 @@ jobs:
       - uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125
         with:
           version: '6.11.2'
+          # Qt 6.11 Windows archive layout: upstream aqtinstall PR #1000.
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b'
+          extra: "${{ runner.os == 'Windows' && '--external 7z' || '' }}"
           archives: "${{ runner.os == 'Linux' && 'qtbase qtdeclarative qtshadertools icu' || 'qtbase qtdeclarative qtshadertools' }}"
           cache: true
       - name: Configure
