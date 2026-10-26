@@ -10,6 +10,13 @@
 - 仅依赖 Qt Core 与 HandleCore 基础模块，不启用串口、Pcap、仿真传输，也不依赖 Qt GUI/QML。
 - 原型与完成结果只读共享；运行区由 makeSelf 独立创建。派生设备析构须先停止访问派生状态的执行源，再清理状态。
 
+## 组合与线程契约
+
+Device<H,C> 是可直接组合的 final 机制对象，构造时接收名称、onStream 与 onConsume 回调。流回调在 Handle 线程执行，完成消费在主线程先于等待器通知执行；无需消费的族传空消费回调。Device 不认识设备族，不再提供 onCompleted/onStream 业务虚口。
+
+拥有者在自身派生状态销毁前删除 Device；Device 析构先同步停止 Handle，再发 retiring 和撤销运行/锁。QObject 父子所有权仅作构造失败兜底。open/start/send/stop 是拥有者使用的 C++ 入口，不是 Qt 槽。setOnConsume 仅用于首次启动前的同步安装和关闭后的主线程清空，不支持运行中并发更换。
+
+
 ## 独立构建和验证
 
 安装对应 Qt 开发包，然后执行（将路径替换为本机 Qt 前缀）：

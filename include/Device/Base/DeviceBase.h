@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <concepts>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <type_traits>
@@ -124,7 +125,7 @@ private:
 // 不转换成员指针：继承来的实现仍带父类类型，不能冒充本层覆写。
 // 函数体的调用顺序与父层接续仍须审查。
 template <typename T, typename Member>
-concept DeviceLifecycleLayer = std::derived_from<T, DeviceBase>
+concept DeviceLifecycleLayer = std::derived_from<T, QObject>
     && std::has_virtual_destructor_v<T> && std::destructible<T>
     && std::same_as<Member, void (T::*)() noexcept>;
 
@@ -190,14 +191,9 @@ inline void DeviceBase::dropLock() noexcept
 // 才能与 worker 进料并发；这是实现契约，不是 const 自动提供的保证。
 // 表（QTimer）是 [主] 资产：worker 判齐后必须投递回主线程停表 + 促发，这一跳无法省。
 // ============================================================
-// **本层的基类写死 DeviceBase，不可配置**（用户定）：设备族不从这条链上插进来，
-// 而是**旁挂**——族基（GMBDeviceBase / DAQDeviceBase）是不继承任何东西的纯接口，由族模板层
-// 多重继承 `Device<H,C>` + 族接口，再以一口 `device()` 交出自己的 DeviceBase 面。
-// 那样机制层一个字不动，"地基"不是模板参数、读代码时一眼可见。
-// （不做成 `Device<H,C,BaseT=DeviceBase>` 把族基串进链里：机制层的基类可配置这件事本身不可
-// 接受，且那套形制在本仓库无先例、扩展性未知。旁挂的代价记在 GMBDevice.h 头注。）
+// 族层拥有一台具体 Device，通过回调接入数据流与完成帧；机制层不认识族或官邸。
 template <HandleLike HandleT, CollectorLike CollectorT>
-class Device : public DeviceBase
+class Device final : public DeviceBase
 {
 public:
     using ParamType = typename HandleT::ParamType;
@@ -205,8 +201,12 @@ public:
 
     // 运行槽持具体型号 Collector；工厂和重试保持同型，族接口只在外部入口/结果处擦除。
 
-    explicit Device(QObject *parent = nullptr)
-        : DeviceBase(parent), handle_(makeDispatch(this))
+    using OnStream = std::function<std::optional<FeedType>(const QByteArray &, RxTime)>;
+    using OnConsume = std::function<void(std::shared_ptr<const CollectorT>)>;
+
+    Device(QString name, QString subtitle, OnStream onStream, OnConsume onConsume, QObject *parent = nullptr)
+        : DeviceBase(parent), name_(std::move(name)), subtitle_(std::move(subtitle)),
+          onStream_(std::move(onStream)), onConsume_(std::move(onConsume)), handle_(makeDispatch(this))
     {
         static_assert(DeviceLifecycleLayer<Device, decltype(&Device::PreDestruction)>);
         // Handle 工作线程的连接通知排队回本线程；close 与换参 open 共用断开收尾。
@@ -214,6 +214,13 @@ public:
         watchdog_.setSingleShot(true);
         QObject::connect(&watchdog_, &QTimer::timeout, this, &Device::restart);
     }
+
+    ~Device() override { PreDestruction(); }
+    [[nodiscard]] QString displayName() const final { return name_; }
+    [[nodiscard]] QString subtitle() const final { return subtitle_; }
+
+    // 初始化交接期间安装；首次 start 之前完成。关闭后由主线程清空，不与消费并发替换。
+    void setOnConsume(OnConsume callback) { onConsume_ = std::move(callback); }
 
     [[nodiscard]] QObject *logSourceObject() noexcept final { return &handle_; }
 
@@ -223,7 +230,7 @@ public:
     // 层级不变量：加锁的前提是 Handle 已激活。公开：设备页据此显示连接状态。
     [[nodiscard]] bool isOpen() const noexcept final { return handle_.isOpen(); }
 
-protected:
+public:
     // 官邸完成参数校验后交入连接快照；换参重连同样是强制通道，不验占用。
     bool open(const ParamType &params) { return handle_.start(params); }
 
@@ -309,16 +316,18 @@ protected:
         teardown();
     }
 
+private:
     void PreDestruction() noexcept override
     {
         handle_.stop();
-        // 此刻仍在末端析构函数体内，派生成员与虚派发均在；DAQ 的处理线程也已退出。
+        // 所有者在自身预析构内销毁本对象；回调依赖仍在，DAQ 处理线程已退出。
         Q_EMIT retiring();
         // 借用者先撤销，再收本地等待；停机命令交给 Handle，发送失败不妨碍本地撤销。
         teardown();
         DeviceBase::PreDestruction();
     }
 
+public:
     // 设备各层直接发射同一个 Handle 信号，不回流到 Device。
     // Handle 对象仍属于主线程；从收包线程发射时，由 QML 将处理投递回主线程。
     [[nodiscard]] const HandleT &logSource() const noexcept { return handle_; }
@@ -412,12 +421,10 @@ private:
             watchdog_.start(ms);
     }
 
-    // [主] 成功帧先交本族处理，再通知等待者；取消的未完成尝试不走这里。
-    virtual void onCompleted(const std::shared_ptr<const CollectorT> &collector) = 0;
-
-    // [worker] 每口数据先经族层处理，再喂 Collector；空表示本口没有有效进料。
-    // 预析构链在派生成员销毁前停止并等待接收线程，因此缺少实现应编译失败。
-    [[nodiscard]] virtual std::optional<FeedType> onStream(const QByteArray &raw, const RxTime at) = 0;
+    const QString name_;
+    const QString subtitle_;
+    const OnStream onStream_; // Handle 线程调用；所有者先销毁本 Device 再拆回调依赖。
+    OnConsume onConsume_;     // 主线程调用；空回调表示本族无需消费完成帧。
 
     // 构造时生成收包回调交给 Handle 独持；本层不保存闭包副本。
     [[nodiscard]] static DataCallback makeDispatch(Device *self);
@@ -440,7 +447,7 @@ DataCallback Device<HandleT, CollectorT>::makeDispatch(Device<HandleT, Collector
     return [self](const QByteArray &raw, const RxTime at)
     {
         // ① 常态旁路：先于闲忙门，没在跑也照跑；交回的是**喂斗的那一口**（空 = 没有给斗的）
-        const auto fed = self->onStream(raw, at);
+        const auto fed = self->onStream_(raw, at);
         if (!fed)
             return;
         auto st = self->run_.load(); // ② 状态促取：空 = idle 丢（CAS 要可写 expected，故非 const）
@@ -460,7 +467,8 @@ DataCallback Device<HandleT, CollectorT>::makeDispatch(Device<HandleT, Collector
                 // 仅空槽时停表：主线程在此不泵事件，worker 只能摘空，不能插入新尝试。
                 if (!self->run_.load())
                     self->watchdog_.stop();
-                self->onCompleted(st->collector);
+                if (self->onConsume_)
+                    self->onConsume_(st->collector);
                 // 消费已提交；族级等待器只接收完成结果，失效也不撤回已提交的帧。
                 st->done(st->collector);
             },
@@ -468,5 +476,4 @@ DataCallback Device<HandleT, CollectorT>::makeDispatch(Device<HandleT, Collector
     };
 }
 
-// 具体设备 = 各型号夹里的官邸（*Device.h，final），经族模板层（GMBDevice<H> / DAQDevice<H, C>）
-// 继承本层；启动 run 走族口 begin，单据与等待器见 DeviceCoro.h。
+// 族接口经组合持有的 Device 启动与撤单；单据和等待器见 TaskCore 的 DeviceCoro.h。
