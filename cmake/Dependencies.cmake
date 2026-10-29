@@ -4,6 +4,6 @@ include(FetchContent)
 if(NOT TARGET Lidar::HandleCore)
     FetchContent_Declare(lidar_handlecore
         GIT_REPOSITORY https://github.com/Lateef-ZHOU/HandleCore.git
-        GIT_TAG a53569c6af437b3c7ead4e8cb62be0ba28f06f61)
+        GIT_TAG 3470a1d9f3826f4a666b0e53c29c001f0901fbbd)
     FetchContent_MakeAvailable(lidar_handlecore)
 endif()

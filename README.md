@@ -16,6 +16,10 @@ Device<H,C> 是可直接组合的 final 机制对象，构造时接收名称、o
 
 拥有者在自身派生状态销毁前删除 Device；Device 析构先同步停止 Handle，再发 retiring 和撤销运行/锁。QObject 父子所有权仅作构造失败兜底。open/start/send/stop 是拥有者使用的 C++ 入口，不是 Qt 槽。setOnConsume 仅用于首次启动前的同步安装和关闭后的主线程清空，不支持运行中并发更换。
 
+2026-10-29：Handle 在 stop 促断前同步发出 false，Device 此时撤单和释放锁，停机指令仍可发送。close 和换参 open 共用此路径，不再有旧的排队 false 撤掉新任务。线程 finished 仅触发 statusChanged 回读实际状态，不撤单、不缓存状态。已经完成的帧仍消费；关闭开始后才到达、尚未完成的帧随本轮撤销，不新增排空。
+
+本轮验证：Windows Qt 6.11.2 / MSVC 与 Linux Qt 6.12.0 / GCC 独立构建、公开头与 CTest 1/1 通过；Windows 主程序设备生命周期回归通过（31.74 秒），覆盖同步撤单、换参重连、旧 finished 不取消新任务、看门狗继续重试及完成帧保留。Windows 独立构建从远端固定拉取 HandleCore 3470a1d；无实物验证。
+
 
 ## 独立构建和验证
 

@@ -209,8 +209,9 @@ public:
           onStream_(std::move(onStream)), onConsume_(std::move(onConsume)), handle_(makeDispatch(this))
     {
         static_assert(DeviceLifecycleLayer<Device, decltype(&Device::PreDestruction)>);
-        // Handle 工作线程的连接通知排队回本线程；close 与换参 open 共用断开收尾。
+        // 首连通知回到本线程；断开通知在 stop 促断前同步收尾，覆盖 close 与换参 open。
         QObject::connect(&handle_, &HandleT::connectionChanged, this, &Device::onConnectionChanged);
+        QObject::connect(&handle_, &QThread::finished, this, &DeviceBase::statusChanged);
         watchdog_.setSingleShot(true);
         QObject::connect(&watchdog_, &QTimer::timeout, this, &Device::restart);
     }
@@ -224,7 +225,7 @@ public:
 
     [[nodiscard]] QObject *logSourceObject() noexcept final { return &handle_; }
 
-    // 强制断开不验占用；同步停止收包，运行与锁由排队的断开通知收尾。
+    // 强制断开不验占用；关闭前同步撤单和释放锁，再等待收包退出。
     void close() { handle_.stop(); }
 
     // 层级不变量：加锁的前提是 Handle 已激活。公开：设备页据此显示连接状态。
@@ -333,10 +334,8 @@ public:
     [[nodiscard]] const HandleT &logSource() const noexcept { return handle_; }
 
 private:
-    // [主] close 或换参 open 停止旧连接后，统一在这里撤单、释放锁。
-    // 已知限制（用户接受）：通知没有连接代数。若旧 false 尚未处理就重连并下新单，
-    // 迟到通知可能撤掉新任务、释放新锁并停止新看门狗；停机指令也可能发往新连接。
-    // 正常分次操作通常不触发；保留此边界，不另加状态位或同步关闭收尾路径。
+    // [主] close 或换参 open 促断前同步撤单、释放锁，不留下旧 false 排队撤销新任务。
+    // 此时连接尚可发送收尾指令；finished 再通知界面回读最终连接状态，不参与撤单。
     void onConnectionChanged(bool connected)
     {
         if (!connected)
