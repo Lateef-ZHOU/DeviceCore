@@ -33,18 +33,17 @@
 // 鉴权口径：lockMatches(p) = 空闲 OR 锁匹配，叠加 isOpen = canEngage——
 // 空闲时任何锁（含 null）都过；被 A 占用时 B（或 null）过不了，跨模块 kill 天然失效。
 //
-// 状态属性只读取现有 Handle 与锁槽，不另存缓存；共用无参 statusChanged 通知。
-// 连接通知、加锁、放锁后通知；断开通知先收尾，再刷新状态。
-// QML 绑定 isOpen / isLocked / holder，自行生成显示文案。
+// 只读属性按需读取 Handle 和锁槽，不保存缓存，也不冒用异型通知参数。
+// 界面监听 Handle.connectionChanged 与本层 lockChanged，在完成阶段回读。
 class DeviceBase : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(QString displayName READ displayName CONSTANT)
     Q_PROPERTY(QString subtitle READ subtitle CONSTANT)
     Q_PROPERTY(QObject *logSource READ logSourceObject CONSTANT)
-    Q_PROPERTY(bool isOpen READ isOpen NOTIFY statusChanged)
-    Q_PROPERTY(bool isLocked READ isLocked NOTIFY statusChanged)
-    Q_PROPERTY(QString holder READ holder NOTIFY statusChanged)
+    Q_PROPERTY(bool isOpen READ isOpen)
+    Q_PROPERTY(bool isLocked READ isLocked)
+    Q_PROPERTY(QString holder READ holder)
 public:
     explicit DeviceBase(QObject *parent = nullptr) : QObject(parent) {}
 
@@ -59,10 +58,8 @@ public:
     [[nodiscard]] virtual QString subtitle() const = 0;
 
 Q_SIGNALS:
-    // [主] **本台状态变了**。
-    // 同时使三个只读状态属性的绑定重新求值，不携带类型各异的属性值。
-    // 连接通知、加锁、放锁后发出；任务也据此排队检查协程是否结束。
-    void statusChanged();
+    // 锁槽实际变动后通知；目前没有获取/释放前的订阅者。
+    void lockChanged(HandleCore::ResourcePhase phase);
     // [主] 收包已停、派生状态尚在；借用者同步取消任务并撤销引用。
     void retiring();
 public:
@@ -75,7 +72,7 @@ public:
     [[nodiscard]] bool tryLock(std::shared_ptr<const DeviceLock> lock);
 
     // ── 锁的只读面：给界面显示"占没占、谁占着"。[主]
-    // **只作显示，裁判仍是 tryLock**：界面收到 statusChanged 时现问一遍，点开始那一刻才真正抢锁。
+    // **只作显示，裁判仍是 tryLock**：界面收到锁完成事件时现问一遍，点开始那一刻才真正抢锁。
     [[nodiscard]] bool isLocked() const noexcept { return bool(lock_); }
     // 占用者名字只从当前锁读取；空闲时返回空串，不另存显示缓存。
     [[nodiscard]] QString holder() const { return lock_ ? lock_->holder() : QString(); }
@@ -88,7 +85,7 @@ public:
     // **“期间已易主”由 lockMatches 当场挡下**（槽里换成了别人的**活**令牌，owner 不等），
     // 调用方遂不必自带核对——后处理模块“整张名单照放”正是靠这一条。
     // 主动关闭与析构都不借本口验锁，直接用 dropLock 收锁；
-    // 断开通知在运行与锁清理完后统一通知状态变化。
+    // dropLock 在锁槽实际变动后发 Released。
     void releaseLock(const std::shared_ptr<const DeviceLock> &lock);
 
     // [主] 两级只读鉴权，族接口经 device() 共用，不为每个操作另造 canXXX 转发。
@@ -145,10 +142,10 @@ inline bool DeviceBase::tryLock(std::shared_ptr<const DeviceLock> lock)
     // 这条对等关系只在令牌非空时成立，换来的是幂等性（用户定：后者更值钱）。
     // **空判必须排在 canEngage 之后**：别人占着 / 没连接时仍要如实返 false（那是真的用不了），
     // 而不是被"反正你也没锁"一句糊弄过去。
-    if (!lock)
+    if (!lock || lock_ == lock)
         return true;
     lock_ = std::move(lock);
-    Q_EMIT statusChanged(); // 锁槽已写好，属性读取能得到占用者。
+    Q_EMIT lockChanged(HandleCore::ResourcePhase::Acquired);
     return true;
 }
 
@@ -162,14 +159,16 @@ inline void DeviceBase::releaseLock(const std::shared_ptr<const DeviceLock> &loc
     if (!lock_) // 槽本来就空：重复释放 / 出示空令牌，空动作
         return;
     dropLock();
-    Q_EMIT statusChanged(); // 断开由连接回调最后通知；此处负责持有者归还锁。
 }
 
 inline void DeviceBase::dropLock() noexcept
 {
     const auto token = std::exchange(lock_, {}); // 摘出即防重入
     if (token)
+    {
         token->ring(); // 摇令牌即取消：收协程当前的等待
+        Q_EMIT lockChanged(HandleCore::ResourcePhase::Released);
+    }
 }
 
 // ============================================================
@@ -209,9 +208,8 @@ public:
           onStream_(std::move(onStream)), onConsume_(std::move(onConsume)), handle_(makeDispatch(this))
     {
         static_assert(DeviceLifecycleLayer<Device, decltype(&Device::PreDestruction)>);
-        // 首连通知回到本线程；断开通知在 stop 促断前同步收尾，覆盖 close 与换参 open。
+        // AboutToRelease 由所属线程同步发出，覆盖 close 与换参 open。
         QObject::connect(&handle_, &HandleT::connectionChanged, this, &Device::onConnectionChanged);
-        QObject::connect(&handle_, &QThread::finished, this, &DeviceBase::statusChanged);
         watchdog_.setSingleShot(true);
         QObject::connect(&watchdog_, &QTimer::timeout, this, &Device::restart);
     }
@@ -334,16 +332,14 @@ public:
     [[nodiscard]] const HandleT &logSource() const noexcept { return handle_; }
 
 private:
-    // [主] close 或换参 open 促断前同步撤单、释放锁，不留下旧 false 排队撤销新任务。
-    // 此时连接尚可发送收尾指令；finished 再通知界面回读最终连接状态，不参与撤单。
-    void onConnectionChanged(bool connected)
+    // [主] 只有主动关闭前同步撤单；迟到的 Released 不得取消后来启动的任务。
+    void onConnectionChanged(HandleCore::ResourcePhase phase)
     {
-        if (!connected)
+        if (phase == HandleCore::ResourcePhase::AboutToRelease)
         {
             teardown();
             this->dropLock(); // 当前等待可能在另一台设备上，仍须通知持有者结束。
         }
-        Q_EMIT statusChanged();
     }
 
     // ── State：一次 run 的状态 = **在跑的那只斗 + 完成回调**，两员一体的裸聚合。

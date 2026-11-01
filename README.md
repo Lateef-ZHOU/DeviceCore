@@ -16,7 +16,7 @@ Device<H,C> 是可直接组合的 final 机制对象，构造时接收名称、o
 
 拥有者在自身派生状态销毁前删除 Device；Device 析构先同步停止 Handle，再发 retiring 和撤销运行/锁。QObject 父子所有权仅作构造失败兜底。open/start/send/stop 是拥有者使用的 C++ 入口，不是 Qt 槽。setOnConsume 仅用于首次启动前的同步安装和关闭后的主线程清空，不支持运行中并发更换。
 
-2026-10-29：Handle 在 stop 促断前同步发出 false，Device 此时撤单和释放锁，停机指令仍可发送。close 和换参 open 共用此路径，不再有旧的排队 false 撤掉新任务。线程 finished 仅触发 statusChanged 回读实际状态，不撤单、不缓存状态。已经完成的帧仍消费；关闭开始后才到达、尚未完成的帧随本轮撤销，不新增排空。
+2026-11-02：Handle 的 connectionChanged(ResourcePhase) 中，AboutToRelease 在 stop 促断前同步触发 Device 撤单/释放锁。DeviceBase 另提供 lockChanged(ResourcePhase)，只在锁槽实际变化后发 Acquired/Released；重复取得同一锁或重复归还不另通知。删除 statusChanged 和 finished 中转。isOpen/isLocked/holder 为按需回读属性，不把枚举冒充布尔属性的 NOTIFY，不保存另一份连接或锁状态。迟到的完成阶段不能撤掉新任务，已完成帧仍消费，退出不新增排空。
 
 本轮验证：Windows Qt 6.11.2 / MSVC 与 Linux Qt 6.12.0 / GCC 独立构建、公开头与 CTest 1/1 通过；Windows 主程序设备生命周期回归通过（31.74 秒），覆盖同步撤单、换参重连、旧 finished 不取消新任务、看门狗继续重试及完成帧保留。Windows 独立构建从远端固定拉取 HandleCore 3470a1d；无实物验证。
 
@@ -52,3 +52,5 @@ target_link_libraries(my_app PRIVATE Lidar::DeviceCore)
 从 [LiDAR_DataACQ](https://github.com/Lateef-ZHOU/LiDAR_DataACQ) 的模块分离提交 `94ad6f8` 提取；初始分仓保持运行逻辑，独立整理构建、验证与发布入口。
 
 自有代码采用 [MIT](LICENSE)，Copyright (c) 2026 周涛 (ZHOU TAO)。第三方依赖不随本仓库改为 MIT，参见 [依赖说明](THIRD_PARTY_NOTICES.md)。
+
+2026-11-02 本地验证：Windows 主程序 Release 与生命周期/三任务回归 7/7 通过，Linux Qt Core 6.8.3 独立构建、公开头、CTest 1/1 通过。本轮依赖提交尚未推送；本地联调通过 FetchContent 源目录覆盖供入对应 HandleCore。
