@@ -105,7 +105,7 @@ protected:
     // 仅供继承链逐层清理；外部通过虚析构进入末端的私有预析构。
     virtual void PreDestruction() noexcept { dropLock(); }
 
-    // [主] 摘锁 + 摇铃，**不喊**。releaseLock 的身子，另两个调用者要自己决定喊什么 / 喊不喊。
+    // [主] 摘锁并摇铃；实际摘下锁时统一发 Released，重复调用为空动作。
     void dropLock() noexcept;
 
 private:
