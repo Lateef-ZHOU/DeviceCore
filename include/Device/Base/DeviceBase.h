@@ -187,7 +187,6 @@ class Device : public HandleT, public DeviceBase
 public:
     using HandleType = HandleT;
     using CollectorType = CollectorT;
-    using ParamType = typename HandleT::ParamType;
     using FeedType = typename CollectorT::Feed; // 喂斗的那一口是什么（采集卡族字节、云台族位形）
 
     // 运行槽持具体型号 Collector；工厂和重试保持同型，族接口只在外部入口/结果处擦除。
@@ -224,7 +223,7 @@ public:
 
 public:
     // 官邸完成参数校验后交入连接快照；换参重连同样是强制通道，不验占用。
-    bool open(const ParamType &params) { return HandleT::start(params); }
+    bool open(const auto &params) { return HandleT::start(params); }
 
     // [主] 官邸命令组连发口：先验 `canEngage(lock)`——锁对（空闲，或出示的正是
     // 持有者的令牌）且设备已连接，才逐帧发出（用户定：直发不走收集器，但验锁照验；设备连上了才能发数据）。
