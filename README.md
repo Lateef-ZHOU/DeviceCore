@@ -63,3 +63,7 @@ target_link_libraries(my_app PRIVATE Lidar::DeviceCore)
 公开文件直接放在 `include/`，引用时使用文件名，不再携带原单仓库的业务目录前缀。CMake 目标名称、C++ 类型和 QML 模块名保持不变；使用方须同步更新头文件路径及固定依赖版本。
 
 目录整理验证（2026-11-03）：Windows Qt 6.11.2 / MSVC：公开头独立编译、CTest 1/1 通过。本轮通过本地源码覆盖验证，固定依赖同步更新到本地提交；尚未推送，不代表已验证远端拉取。
+
+## 2026-11-04：设备日志直接接线（用户定）
+
+DeviceBase 删除 logSourceObject 契约，Device 删除 logSource() 自引用读口。设备机制层直接调用继承自 Handle 的 logMessage，不增设日志源、转发或状态。 本轮仅本地整理，未推送；Windows 集成验证记录见主程序维护操作。

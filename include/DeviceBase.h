@@ -41,9 +41,6 @@ public:
     DeviceBase() = default;
     Q_DISABLE_COPY_MOVE(DeviceBase)
 
-    // QML 只借用现有 Handle 的信号源；属性返回的 QObject 保持 C++ 所有权。
-    [[nodiscard]] virtual QObject *logSourceObject() noexcept = 0;
-
     // 下级就绪谓词，模板层实现（→ HandleT::isOpen）。层级不变量：上级加锁的前提是下级已激活。
     // **公开**：界面据此显示连接状态——按"纯转发皮不留，虚函数直接公开"，不另包一层。
     [[nodiscard]] virtual bool isOpen() const noexcept = 0;
@@ -213,7 +210,6 @@ public:
     // 初始化交接期间安装；首次 start 之前完成。关闭后由主线程清空，不与消费并发替换。
     void setOnConsume(OnConsume callback) { onConsume_ = std::move(callback); }
 
-    [[nodiscard]] QObject *logSourceObject() noexcept final { return this; }
 
     // 强制断开不验占用；关闭前同步撤单和释放锁，再等待收包退出。
     void close() { HandleT::stop(); }
@@ -235,7 +231,7 @@ public:
     {
         if (!canEngage(lock))
         {
-            Q_EMIT this->logSource().logMessage(QStringLiteral("设备未连接或正被占用，指令未下发"));
+            Q_EMIT this->logMessage(QStringLiteral("设备未连接或正被占用，指令未下发"));
             return false;
         }
         return rawSend(commands);
@@ -265,17 +261,17 @@ public:
         // 本层只报告准入拒绝；后续发送失败由 Handle 报告。
         if (!proto)
         {
-            Q_EMIT this->logSource().logMessage(QStringLiteral("启动请求缺少 Collector，未启动"));
+            Q_EMIT this->logMessage(QStringLiteral("启动请求缺少 Collector，未启动"));
             return false;
         }
         if (!canEngage(lock))
         {
-            Q_EMIT this->logSource().logMessage(QStringLiteral("设备未连接或正被占用，未启动"));
+            Q_EMIT this->logMessage(QStringLiteral("设备未连接或正被占用，未启动"));
             return false;
         }
         if (run_.load())
         {
-            Q_EMIT this->logSource().logMessage(QStringLiteral("设备已有未结束的请求，未启动"));
+            Q_EMIT this->logMessage(QStringLiteral("设备已有未结束的请求，未启动"));
             return false;
         }
         // makeSelf 按不可变配置另造独立的收集区，不复制原斗的收集状态。
@@ -316,11 +312,6 @@ protected:
         teardown();
         DeviceBase::PreDestruction();
     }
-
-public:
-    // 设备各层直接发射同一个 Handle 信号，不回流到 Device。
-    // Device/Handle 对象属于主线程；从收包线程发射时，由 QML 将处理投递回主线程。
-    [[nodiscard]] const HandleT &logSource() const noexcept { return *this; }
 
 private:
     // [主] 只有主动关闭前同步撤单；迟到的 Released 不得取消后来启动的任务。
