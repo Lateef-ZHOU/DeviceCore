@@ -70,7 +70,7 @@ public:
     }
 
     // [主] 归还锁 + **喊一声**：**验锁进门**（lockMatches：空闲，或出示的正是持有者的令牌），
-    // 槽本来就空则是空动作、不喊（与 tryLock 的同一锁判断对称：重复释放不重复喊）。
+    // 空槽由 dropLock 处理，不重复判断。
     // **与 tryLock 成对，故同样公开**——放锁的是协程的**后处理模块**
     // （`DeviceCoro::promise_type` 的析构函数 / final_suspend），而它不在设备的继承链上。
     // **安全性不靠可见性靠验锁**：外人出示不出持有者的令牌，就放不掉别人的锁。
@@ -137,11 +137,6 @@ inline void DeviceBase::releaseLock(const std::shared_ptr<const DeviceLock> &loc
 {
     if (!lockMatches(lock))
         return; // 不是持有者出示的令牌：不动别人的锁（"期间已易主"在此当场挡下）
-    // **放一把本来就不存在的锁 = 空动作，不喊**（与 tryLock 的同一锁判断对称）：喊话是"锁态变了"的
-    // 通知，不是"有人调过放锁"的回音。**出示空令牌恒落入本支**——空令牌只在空闲设备上过得了
-    // lockMatches，而空闲设备的槽本就是空的，故"放一把空锁"与"重复释放"是同一件事，同一条路。
-    if (!lock_) // 槽本来就空：重复释放 / 出示空令牌，空动作
-        return;
     dropLock();
 }
 

@@ -77,3 +77,7 @@ DeviceBase 在构造时接收名称与副标题，保存为 public const QString
 ## 2026-11-04：简化重复加锁判断（用户定）
 
 tryLock 先执行 canEngage，再用 lock_ == lock 同时覆盖同一令牌和双方为空；删除冗余 !lock 分支与长篇注释。未连接、异锁拒绝及实际加锁时的 Acquired 通知保持不变。仅本地整理，不推送。
+
+## 2026-11-04：释放锁只保留验锁（用户定）
+
+releaseLock 验证令牌后直接调用 dropLock，不为已有幂等行为增加空槽判断；空槽不摇铃、不发 Released 的保证统一由 dropLock 实现。释放和通知行为保持，未推送。
