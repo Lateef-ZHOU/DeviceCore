@@ -211,7 +211,7 @@ public:
     // 持有者的令牌）且设备已连接，才逐帧发出（用户定：直发不走收集器，但验锁照验；设备连上了才能发数据）。
     // 设备页不持锁，传空令牌 `{}` = "我不持锁"：空闲放行，被任务占着即拒（停止也拒——任务的停止走任务页）；
     // 协程持锁时出示本帧令牌。准入拒绝统一记一条日志；实际发送失败由 Handle 报告，本层不重复记录。
-    // run 自己的启动 / 看门狗重发 / 拆机停机不走本口，走私有小灶 rawSend——那几拍的锁 start 已验过，
+    // run 自己的启动 / 看门狗重发 / 拆机停机不走本口，直接调用 HandleT::send——那几拍的锁 start 已验过，
     // 拆机则须在断联时照走。
     bool send(const QList<QByteArray> &commands, const std::shared_ptr<const DeviceLock> &lock) const
     {
@@ -220,7 +220,7 @@ public:
             Q_EMIT this->logMessage(QStringLiteral("设备未连接或正被占用，指令未下发"));
             return false;
         }
-        return rawSend(commands);
+        return HandleT::send(commands);
     }
 
     // [主] 准入后启动或替换 run：现造收集区、装入状态、发启动，再设置看门狗。
@@ -259,7 +259,7 @@ public:
         // const 仍允许读取收集区；可读范围和新斗初始状态依赖工厂契约，见 CollectorLike。
         const auto st = std::make_shared<const State>(proto->makeSelf(), std::move(done));
         run_.store(st);                             // ① 装状态（斗 + 回调一体）
-        (void)rawSend(st->collector->buildStart());
+        (void)HandleT::send(st->collector->buildStart());
         const int ms = st->collector->timeoutMs();
         if (ms <= 0) // 发送后按新请求的时限统一设置看门狗。
             watchdog_.stop();
@@ -322,17 +322,6 @@ private:
         DoneFn<CollectorT> done;               // 促发即交付（斗份额非空 = 成了，空 = 没成）
     };
 
-    // [主] 不验锁的命令组连发，供 run 启动 / 看门狗重发 / 撤单使用；官邸使用的 send
-    // 先验 canEngage 再转到这里。逐帧直转 HandleT::send、短路失败。空表恒真、零发送（"无命令"结构性
-    // 不产生下行）；表内空词由 Handle::onTX 词长裁决，不归本口；未连接时 HandleT::send 自己判空喊话、返 false。
-    bool rawSend(const QList<QByteArray> &commands) const
-    {
-        for (const auto &cmd : commands)
-            if (!HandleT::send(cmd))
-                return false;
-        return true;
-    }
-
     // [主] 停看门狗并原子摘走当前运行；只有拿到状态的调用者能撤销等待。
     // 无条件尝试发送停机命令；连接/发送失败由 Handle 报告，仍须通知等待者本次已撤销。
     void teardown()
@@ -341,7 +330,7 @@ private:
         const auto st = run_.exchange({}); // 摘状态 = 注销（一次性）
         if (!st)
             return;                          // 已拆完 / 本就没在跑
-        (void)rawSend(st->collector->buildStop());
+        (void)HandleT::send(st->collector->buildStop());
         st->done({});                        // 促发：**空斗 = 没成**（局部份额持过整调）
     }
 
@@ -366,7 +355,7 @@ private:
         //    此后只读 next，故直接把 old 交出去即可，不必另立一个只为过一遍类型的局部量。
         if (!run_.compare_exchange_strong(old, next))
             return;
-        rawSend(next->collector->buildStart()); // ④ 重发启动命令（同一个 run，锁在 start 时已验）
+        HandleT::send(next->collector->buildStart()); // ④ 重发启动命令（同一个 run，锁在 start 时已验）
         // ⑤ 起表——**非正时限即不设表**（NoWatchdogMs，见 RunBase.h）：结构上没有终点的 run
         // （连续运动）不存在"卡住"，起了表只会周期性重发。不起表 ⇒ 本口不再被触发，
         // 未自然完成的 run 由取消或主动关闭结束。

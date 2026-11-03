@@ -99,4 +99,5 @@ Device 删除 open/close 薄转发，直接继承 Handle 的连接入口；isOpe
 
 先 canEngage 验连接/锁，再检查原型非空；删除已有 run 的拒收。通过准入即可直接 store 新状态，未完成旧请求被替换、不额外下发旧停机或通知旧回调；调用方负责旧等待寿命。worker 已 CAS 摘走的完成帧仍按原消费/通知链交付。
 
-删除 start 开头无条件停看门狗：新时限为正时直接 start(ms) 重置，非正时 stop 撤掉旧表，停表/起表合并为 if/else，统一位于 rawSend 之后。发送失败只由 Handle 报告，不再在 start 内 CAS 撤销；返回 true 只表示请求已接受，非正时限不保证传输可靠性。主线程同步启动过程不泵事件，不新增运行状态、锁或转发。
+删除 start 开头无条件停看门狗：新时限为正时直接 start(ms) 重置，非正时 stop 撤掉旧表，停表/起表合并为 if/else，统一位于 HandleT::send 之后。发送失败只由 Handle 报告，不再在 start 内 CAS 撤销；返回 true 只表示请求已接受，非正时限不保证传输可靠性。主线程同步启动过程不泵事件，不新增运行状态、锁或转发。
+2026-11-04 用户定：删除 Device.rawSend；命令列表发送归 HandleCore 的 send(QList<QByteArray>) 重载。Device 的验锁发送、采集启动、重试和撤单直接调用 HandleT::send，保留空表零发送、首败短路及当前启动/取消语义。
