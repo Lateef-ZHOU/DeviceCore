@@ -14,7 +14,7 @@
 #include <QTimer>
 
 #include <HandleBase.h> // Handle<> / HandleLike
-#include "Device/Base/RunBase.h"    // 运行词汇底座：DoneFn / DeviceLock / Collector / CollectorLike
+#include "RunBase.h"    // 运行词汇底座：DoneFn / DeviceLock / Collector / CollectorLike
 
 // 锁令牌 DeviceLock（住 RunBase.h，持占用者名称和取消铃，指针表示身份）：
 // 每帧至多一把，名下多台设备持同一把。

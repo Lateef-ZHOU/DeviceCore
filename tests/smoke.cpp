@@ -1,6 +1,6 @@
 #include <QCoreApplication>
 #include <type_traits>
-#include <Device/Base/DeviceBase.h>
+#include <DeviceBase.h>
 static_assert(!std::is_copy_constructible_v<DeviceLock>);
 static_assert(!std::is_move_constructible_v<DeviceLock>);
 static_assert(!std::derived_from<DeviceBase, QObject>);

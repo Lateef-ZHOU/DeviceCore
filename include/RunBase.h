@@ -7,7 +7,7 @@
 #include <QList>
 #include <QString>
 
-#include "Device/Base/RxTime.h"
+#include "RxTime.h"
 
 // ============================================================
 // RunBase.h — 一次 run 的词汇底座：一个契约基类（Collector）+ 配套机制词

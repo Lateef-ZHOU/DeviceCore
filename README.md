@@ -57,3 +57,9 @@ target_link_libraries(my_app PRIVATE Lidar::DeviceCore)
 
 
 2026-11-03 验证：Linux Qt Core 6.8.3 独立构建、公开头及 module_smoke 1/1；Windows Qt 6.11.2 主程序 Release、生命周期/等待器/任务回归 7/7 通过。主程序与 15 组 QML 检查通过。新依赖为相邻仓库的本地提交，尚未推送；联调使用 FetchContent 源码覆盖。
+
+## 源码目录（2026-11-03）
+
+公开文件直接放在 `include/`，引用时使用文件名，不再携带原单仓库的业务目录前缀。CMake 目标名称、C++ 类型和 QML 模块名保持不变；使用方须同步更新头文件路径及固定依赖版本。
+
+目录整理验证（2026-11-03）：Windows Qt 6.11.2 / MSVC：公开头独立编译、CTest 1/1 通过。本轮通过本地源码覆盖验证，固定依赖同步更新到本地提交；尚未推送，不代表已验证远端拉取。
