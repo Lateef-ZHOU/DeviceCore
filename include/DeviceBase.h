@@ -223,8 +223,8 @@ public:
         return rawSend(commands);
     }
 
-    // [主] 准入后启动或替换 run：现造收集区、装入状态、设置看门狗，再发启动。
-    // 发败时有看门狗则等重试；无看门狗则拒收，不能挂起一个没有恢复路径的请求。
+    // [主] 准入后启动或替换 run：现造收集区、装入状态、发启动，再设置看门狗。
+    // 返回 true 表示接受请求，不保证发送或收集成功；非正时限不重试，也不因发送失败撤单。
     // 主线程直接 store 替换未完成请求，不通知其旧回调；调用者负责旧等待的寿命。
     // worker 若已 CAS 摘走旧状态，已取得的完成权不受新请求影响，仍排队交付。
     //
@@ -259,18 +259,12 @@ public:
         // const 仍允许读取收集区；可读范围和新斗初始状态依赖工厂契约，见 CollectorLike。
         const auto st = std::make_shared<const State>(proto->makeSelf(), std::move(done));
         run_.store(st);                             // ① 装状态（斗 + 回调一体）
+        (void)rawSend(st->collector->buildStart());
         const int ms = st->collector->timeoutMs();
-        if (ms <= 0) // 按新请求的时限统一设置看门狗，再发送启动命令。
+        if (ms <= 0) // 发送后按新请求的时限统一设置看门狗。
             watchdog_.stop();
         else
             watchdog_.start(ms);
-        if (!rawSend(st->collector->buildStart()) && ms <= 0)
-        {
-            // 收包若已完成并摘走状态，仍按已排队的结果交付；否则撤销并由等待器处理拒收。
-            auto pending = st;
-            if (run_.compare_exchange_strong(pending, {}))
-                return false;
-        }
         return true;
     }
 
