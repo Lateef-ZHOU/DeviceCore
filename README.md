@@ -101,3 +101,9 @@ Device 删除 open/close 薄转发，直接继承 Handle 的连接入口；isOpe
 
 删除 start 开头无条件停看门狗：新时限为正时直接 start(ms) 重置，非正时 stop 撤掉旧表，停表/起表合并为 if/else，统一位于 HandleT::send 之后。发送失败只由 Handle 报告，不再在 start 内 CAS 撤销；返回 true 只表示请求已接受，非正时限不保证传输可靠性。主线程同步启动过程不泵事件，不新增运行状态、锁或转发。
 2026-11-04 用户定：删除 Device.rawSend；命令列表发送归 HandleCore 的 send(QList<QByteArray>) 重载。Device 的验锁发送、采集启动、重试和撤单直接调用 HandleT::send，保留空表零发送、首败短路及当前启动/取消语义。
+
+## 2026-11-04：进料在消费端取值（用户定）
+
+Device::onData 将 onStream 返回的 optional 原样交给 Collector::feed。feed 统一拦截空输入，并保证完成后不再进料；非空 optional 继续原样传入 onFeed，由实际消费端取值。run_ 仍为 atomic<shared_ptr<const State>>，teardown 的 exchange 原子摘槽，不增加锁或状态。
+
+本轮仅本地整理，不推送；集成验证见主程序维护记录。

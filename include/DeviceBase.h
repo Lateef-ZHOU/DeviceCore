@@ -384,10 +384,8 @@ void Device<HandleT, CollectorT>::onData(const QByteArray &raw, const RxTime at)
 {
     // ① 常态旁路：先于闲忙门，没在跑也照跑；交回的是**喂斗的那一口**（空 = 没有给斗的）
     const auto fed = this->onStream_(raw, at);
-    if (!fed)
-        return;
     auto st = this->run_.load(); // ② 状态促取：空 = idle 丢（CAS 要可写 expected，故非 const）
-    if (!st || !st->collector->feed(*fed, at)) // ③ 喂 + 判齐一口：false = 未齐继续收（本函数是喂料的使用端，解引用归这里）
+    if (!st || !st->collector->feed(fed, at)) // ③ 原样交料；Collector 处理空输入与完成判定。
         return;
     // ④ **一道闸**：CAS 摘状态 = 同时取得"投递权"与"这次 run 的结果所有权"。
     //    失败 = 状态已易主（看门狗换斗顶替 / teardown 清空），本斗已废、不投递（失败路

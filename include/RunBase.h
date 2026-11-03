@@ -2,6 +2,7 @@
 #include <concepts>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <QByteArray>
 #include <QList>
@@ -87,7 +88,7 @@ public:
 
     // 进料 + 判齐一口 [worker]：true = 已收齐（Device 随即 CAS 摘状态、投递交付）；false = 未齐
     // 继续收。公共入口非虚，CollectorLike 检查型号沿用本层 feed，不得用同名声明隐藏它。
-    //     已齐 → 不再吃料，直接说齐；否则吃一口，再问一次齐没齐。
+    //     空输入不推进；非空输入已齐则不再吃料，否则吃一口再判齐。
     // 型号遂只写两件事：`onFeed` 怎么吃、`settled()` 怎么算齐；**"吃完了返什么"不必各写一遍**。
     //
     // **前一道防不是防御，是承重**：`settled()` 问的是"数据此刻齐不齐"，而那是个**可回退**的
@@ -98,8 +99,11 @@ public:
     // 时刻之差），而进料是百赫兹量级，这笔换"型号不必自己收尾"是划算的。
     // `at` = 这一口料的**到料时刻**（Handle 层交上来，网口是内核盖的章；见 RxTime 的长注）。
     // 谁用谁决定：采集卡族拿它盖帧时刻，云台族不用（判到位量的是**时长**，见 GMBCollector）。
-    bool feed(const FeedT &item, const RxTime at)
+    // 空输入不喂料、不触发完成；非空 optional 原样交给实际消费数据的 onFeed。
+    bool feed(const std::optional<FeedT> &item, const RxTime at)
     {
+        if (!item)
+            return false;
         if (settled())
             return true; // 已是成品：不再吃料（收齐的斗不可被后来的料改写）
         onFeed(item, at);
@@ -136,7 +140,8 @@ private:
     // 可变点：**吃一口料**，就这一件事——校验不过就直接返回，吃下了就把状态更新掉。
     // **返 void 是刻意的**：齐没齐由 `settled()` 一处回答，不在此处再答一遍（两处答同一个问题
     // 就是两份账）。型号侧的副作用（如盖帧时刻）也写在本口里；皮保证了已齐之后本口不再被调。
-    virtual void onFeed(const FeedT &item, RxTime at) = 0;
+    // feed 保证非空；本层不代为解引用，由消费实现读取内容。
+    virtual void onFeed(const std::optional<FeedT> &item, RxTime at) = 0;
 
 protected:
     Collector() = default; // 契约基类不单独成活
