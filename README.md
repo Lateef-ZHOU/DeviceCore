@@ -83,4 +83,4 @@ tryLock 先执行 canEngage，再用 lock_ == lock 同时覆盖同一令牌和�
 releaseLock 验证令牌后直接调用 dropLock，不为已有幂等行为增加空槽判断；空槽不摇铃、不发 Released 的保证统一由 dropLock 实现。释放和通知行为保持，未推送。
 
 
-2026-11-04：Device 删除 HandleType、FeedType 简单别名，收包回调直接使用 CollectorT::Feed。CollectorType 暂留：改为族模板显式接收 Collector 类型后，MSVC 对结构体模板参数与协变返回的组合报错；已独立复现，额外类型提取方案待用户决定。qmlHolder、收发及运行行为不变，未推送。
+2026-11-04：Device 删除 HandleType、FeedType 简单别名，收包回调直接使用 CollectorT::Feed。CollectorType 暂留：改为族模板显式接收 Collector 类型后，MSVC 对结构体模板参数与协变返回的组合报错；已独立复现。用户确认暂留 CollectorType，避免扩大改动，不增加编译期类型提取或调整协变接口。qmlHolder、收发及运行行为不变，未推送。
