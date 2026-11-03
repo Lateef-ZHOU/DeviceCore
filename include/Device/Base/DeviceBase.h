@@ -13,7 +13,7 @@
 #include <QString>
 #include <QTimer>
 
-#include <HandleBase.h> // Handle<> / DataCallback / HandleLike
+#include <HandleBase.h> // Handle<> / HandleLike
 #include "Device/Base/RunBase.h"    // 运行词汇底座：DoneFn / DeviceLock / Collector / CollectorLike
 
 // 锁令牌 DeviceLock（住 RunBase.h，持占用者名称和取消铃，指针表示身份）：
@@ -29,41 +29,31 @@
 
 // DeviceBase — 设备非模板基类：锁层骨架 + identity 鉴权。
 // 模板无关的锁职责收在这；"下级是否就绪"以纯虚 isOpen 下放模板层。
-// 承载 QObject、状态通知及退出时撤销借用的通知。
+// 不继承 QObject；唯一 QObject 来自 Handle，具体末端提供锁信号与界面属性。
 // 鉴权口径：lockMatches(p) = 空闲 OR 锁匹配，叠加 isOpen = canEngage——
 // 空闲时任何锁（含 null）都过；被 A 占用时 B（或 null）过不了，跨模块 kill 天然失效。
 //
 // 只读属性按需读取 Handle 和锁槽，不保存缓存，也不冒用异型通知参数。
 // 界面监听 Handle.connectionChanged 与本层 lockChanged，在完成阶段回读。
-class DeviceBase : public QObject
+class DeviceBase
 {
-    Q_OBJECT
-    Q_PROPERTY(QString displayName READ displayName CONSTANT)
-    Q_PROPERTY(QString subtitle READ subtitle CONSTANT)
-    Q_PROPERTY(QObject *logSource READ logSourceObject CONSTANT)
-    Q_PROPERTY(bool isOpen READ isOpen)
-    Q_PROPERTY(bool isLocked READ isLocked)
-    Q_PROPERTY(QString holder READ holder)
 public:
-    explicit DeviceBase(QObject *parent = nullptr) : QObject(parent) {}
+    DeviceBase() = default;
+    Q_DISABLE_COPY_MOVE(DeviceBase)
 
     // QML 只借用现有 Handle 的信号源；属性返回的 QObject 保持 C++ 所有权。
     [[nodiscard]] virtual QObject *logSourceObject() noexcept = 0;
 
-    // 下级就绪谓词，模板层实现（→ handle_.isOpen）。层级不变量：上级加锁的前提是下级已激活。
+    // 下级就绪谓词，模板层实现（→ HandleT::isOpen）。层级不变量：上级加锁的前提是下级已激活。
     // **公开**：界面据此显示连接状态——按"纯转发皮不留，虚函数直接公开"，不另包一层。
     [[nodiscard]] virtual bool isOpen() const noexcept = 0;
 
     [[nodiscard]] virtual QString displayName() const = 0;
     [[nodiscard]] virtual QString subtitle() const = 0;
 
-Q_SIGNALS:
-    // 锁槽实际变动后通知；目前没有获取/释放前的订阅者。
-    void lockChanged(HandleCore::ResourcePhase phase);
-    // [主] 收包已停、派生状态尚在；借用者同步取消任务并撤销引用。
-    void retiring();
-public:
-    ~DeviceBase() override = default;
+    // 纯 C++ 契约；具体末端直接以 Qt 信号覆写，不另设通知对象。
+    virtual void lockChanged(HandleCore::ResourcePhase phase) = 0;
+    virtual ~DeviceBase() = default;
 
     // 加锁：canEngage 通过则持有（按值收份额 + move 入槽）。
     // 占用者名字由锁在创建时持有，设备只接收锁份额。
@@ -192,9 +182,11 @@ inline void DeviceBase::dropLock() noexcept
 // ============================================================
 // 族层拥有一台具体 Device，通过回调接入数据流与完成帧；机制层不认识族或官邸。
 template <HandleLike HandleT, CollectorLike CollectorT>
-class Device final : public DeviceBase
+class Device : public HandleT, public DeviceBase
 {
 public:
+    using HandleType = HandleT;
+    using CollectorType = CollectorT;
     using ParamType = typename HandleT::ParamType;
     using FeedType = typename CollectorT::Feed; // 喂斗的那一口是什么（采集卡族字节、云台族位形）
 
@@ -204,34 +196,35 @@ public:
     using OnConsume = std::function<void(std::shared_ptr<const CollectorT>)>;
 
     Device(QString name, QString subtitle, OnStream onStream, OnConsume onConsume, QObject *parent = nullptr)
-        : DeviceBase(parent), name_(std::move(name)), subtitle_(std::move(subtitle)),
-          onStream_(std::move(onStream)), onConsume_(std::move(onConsume)), handle_(makeDispatch(this))
+        : name_(std::move(name)), subtitle_(std::move(subtitle)),
+          onStream_(std::move(onStream)), onConsume_(std::move(onConsume))
     {
+        this->setParent(parent);
         static_assert(DeviceLifecycleLayer<Device, decltype(&Device::PreDestruction)>);
         // AboutToRelease 由所属线程同步发出，覆盖 close 与换参 open。
-        QObject::connect(&handle_, &HandleT::connectionChanged, this, &Device::onConnectionChanged);
+        QObject::connect(this, &HandleT::connectionChanged, this, &Device::onConnectionChanged);
         watchdog_.setSingleShot(true);
         QObject::connect(&watchdog_, &QTimer::timeout, this, &Device::restart);
     }
 
-    ~Device() override { PreDestruction(); }
+    ~Device() override = default;
     [[nodiscard]] QString displayName() const final { return name_; }
     [[nodiscard]] QString subtitle() const final { return subtitle_; }
 
     // 初始化交接期间安装；首次 start 之前完成。关闭后由主线程清空，不与消费并发替换。
     void setOnConsume(OnConsume callback) { onConsume_ = std::move(callback); }
 
-    [[nodiscard]] QObject *logSourceObject() noexcept final { return &handle_; }
+    [[nodiscard]] QObject *logSourceObject() noexcept final { return this; }
 
     // 强制断开不验占用；关闭前同步撤单和释放锁，再等待收包退出。
-    void close() { handle_.stop(); }
+    void close() { HandleT::stop(); }
 
     // 层级不变量：加锁的前提是 Handle 已激活。公开：设备页据此显示连接状态。
-    [[nodiscard]] bool isOpen() const noexcept final { return handle_.isOpen(); }
+    [[nodiscard]] bool isOpen() const noexcept final { return HandleT::isOpen(); }
 
 public:
     // 官邸完成参数校验后交入连接快照；换参重连同样是强制通道，不验占用。
-    bool open(const ParamType &params) { return handle_.start(params); }
+    bool open(const ParamType &params) { return HandleT::start(params); }
 
     // [主] 官邸命令组连发口：先验 `canEngage(lock)`——锁对（空闲，或出示的正是
     // 持有者的令牌）且设备已连接，才逐帧发出（用户定：直发不走收集器，但验锁照验；设备连上了才能发数据）。
@@ -315,12 +308,11 @@ public:
         teardown();
     }
 
-private:
+protected:
     void PreDestruction() noexcept override
     {
-        handle_.stop();
+        HandleT::stop();
         // 所有者在自身预析构内销毁本对象；回调依赖仍在，DAQ 处理线程已退出。
-        Q_EMIT retiring();
         // 借用者先撤销，再收本地等待；停机命令交给 Handle，发送失败不妨碍本地撤销。
         teardown();
         DeviceBase::PreDestruction();
@@ -328,8 +320,8 @@ private:
 
 public:
     // 设备各层直接发射同一个 Handle 信号，不回流到 Device。
-    // Handle 对象仍属于主线程；从收包线程发射时，由 QML 将处理投递回主线程。
-    [[nodiscard]] const HandleT &logSource() const noexcept { return handle_; }
+    // Device/Handle 对象属于主线程；从收包线程发射时，由 QML 将处理投递回主线程。
+    [[nodiscard]] const HandleT &logSource() const noexcept { return *this; }
 
 private:
     // [主] 只有主动关闭前同步撤单；迟到的 Released 不得取消后来启动的任务。
@@ -365,12 +357,12 @@ private:
     };
 
     // [主] 不验锁的命令组连发，供 run 启动 / 看门狗重发 / 撤单使用；官邸使用的 send
-    // 先验 canEngage 再转到这里。逐帧直转 handle_.send、短路失败。空表恒真、零发送（"无命令"结构性
-    // 不产生下行）；表内空词由 Handle::onTX 词长裁决，不归本口；未连接时 handle_.send 自己判空喊话、返 false。
+    // 先验 canEngage 再转到这里。逐帧直转 HandleT::send、短路失败。空表恒真、零发送（"无命令"结构性
+    // 不产生下行）；表内空词由 Handle::onTX 词长裁决，不归本口；未连接时 HandleT::send 自己判空喊话、返 false。
     bool rawSend(const QList<QByteArray> &commands) const
     {
         for (const auto &cmd : commands)
-            if (!handle_.send(cmd))
+            if (!HandleT::send(cmd))
                 return false;
         return true;
     }
@@ -421,8 +413,8 @@ private:
     const OnStream onStream_; // Handle 线程调用；所有者先销毁本 Device 再拆回调依赖。
     OnConsume onConsume_;     // 主线程调用；空回调表示本族无需消费完成帧。
 
-    // 构造时生成收包回调交给 Handle 独持；本层不保存闭包副本。
-    [[nodiscard]] static DataCallback makeDispatch(Device *self);
+    // Handle 在收包线程直接虚派发，不保存 this 闭包。
+    void onData(const QByteArray &raw, RxTime at) final;
 
     // [主写 / worker 读+摘] 当前 run 的状态**单槽**：在岗 ⟺ run 进行中；CAS 摘出即注销。
     // **不可变快照 + 整块换指针**：谁都不原地改指向物，主线程换新的、worker 摘空的（见上面的
@@ -431,44 +423,39 @@ private:
 
     QTimer watchdog_; // [主] 看门狗：单发，到点 restart（换斗重发，不促醒协程）
 
-    // Device 预析构在末端析构体返回前 stop/wait，保护回调访问的本层与派生状态。
-    HandleT handle_;
+    // 末端析构首句调用 PreDestruction，保护上传所访问的 Device 与官邸状态。
 };
 
 template <HandleLike HandleT, CollectorLike CollectorT>
-DataCallback Device<HandleT, CollectorT>::makeDispatch(Device<HandleT, CollectorT> *self)
+void Device<HandleT, CollectorT>::onData(const QByteArray &raw, const RxTime at)
 {
-    // [worker] 常态旁路、喂料判齐、CAS 取得完成权，再排队回主线程消费和通知等待者。
-    return [self](const QByteArray &raw, const RxTime at)
-    {
-        // ① 常态旁路：先于闲忙门，没在跑也照跑；交回的是**喂斗的那一口**（空 = 没有给斗的）
-        const auto fed = self->onStream_(raw, at);
-        if (!fed)
-            return;
-        auto st = self->run_.load(); // ② 状态促取：空 = idle 丢（CAS 要可写 expected，故非 const）
-        if (!st || !st->collector->feed(*fed, at)) // ③ 喂 + 判齐一口：false = 未齐继续收（本闭包是喂料的使用端，解引用归这里）
-            return;
-        // ④ **一道闸**：CAS 摘状态 = 同时取得"投递权"与"这次 run 的结果所有权"。
-        //    失败 = 状态已易主（看门狗换斗顶替 / teardown 清空），本斗已废、不投递（失败路
-        //    expected 已被改写成现值，绝不可再用）。成功即独占：此后 worker 见空槽即 idle，
-        //    份额上行后使用端只读零竞态由此奠基。
-        if (!self->run_.compare_exchange_strong(st, {}))
-            return;
-        QMetaObject::invokeMethod(
-            self,
-            [self, st] // 携状态投递（CAS 一次性 ⇒ 同一份状态恒至多一次投递）
-            {
-                // [主] st 已赢得完成权，仍须交付；run_ 可能已装入后来启动的尝试。
-                // 仅空槽时停表：主线程在此不泵事件，worker 只能摘空，不能插入新尝试。
-                if (!self->run_.load())
-                    self->watchdog_.stop();
-                if (self->onConsume_)
-                    self->onConsume_(st->collector);
-                // 消费已提交；族级等待器只接收完成结果，失效也不撤回已提交的帧。
-                st->done(st->collector);
-            },
-            Qt::QueuedConnection);
-    };
+    // ① 常态旁路：先于闲忙门，没在跑也照跑；交回的是**喂斗的那一口**（空 = 没有给斗的）
+    const auto fed = this->onStream_(raw, at);
+    if (!fed)
+        return;
+    auto st = this->run_.load(); // ② 状态促取：空 = idle 丢（CAS 要可写 expected，故非 const）
+    if (!st || !st->collector->feed(*fed, at)) // ③ 喂 + 判齐一口：false = 未齐继续收（本函数是喂料的使用端，解引用归这里）
+        return;
+    // ④ **一道闸**：CAS 摘状态 = 同时取得"投递权"与"这次 run 的结果所有权"。
+    //    失败 = 状态已易主（看门狗换斗顶替 / teardown 清空），本斗已废、不投递（失败路
+    //    expected 已被改写成现值，绝不可再用）。成功即独占：此后 worker 见空槽即 idle，
+    //    份额上行后使用端只读零竞态由此奠基。
+    if (!this->run_.compare_exchange_strong(st, {}))
+        return;
+    QMetaObject::invokeMethod(
+        this,
+        [this, st] // 携状态投递（CAS 一次性 ⇒ 同一份状态恒至多一次投递）
+        {
+            // [主] st 已赢得完成权，仍须交付；run_ 可能已装入后来启动的尝试。
+            // 仅空槽时停表：主线程在此不泵事件，worker 只能摘空，不能插入新尝试。
+            if (!this->run_.load())
+                this->watchdog_.stop();
+            if (this->onConsume_)
+                this->onConsume_(st->collector);
+            // 消费已提交；族级等待器只接收完成结果，失效也不撤回已提交的帧。
+            st->done(st->collector);
+        },
+        Qt::QueuedConnection);
 }
 
 // 族接口经组合持有的 Device 启动与撤单；单据和等待器见 TaskCore 的 DeviceCoro.h。
