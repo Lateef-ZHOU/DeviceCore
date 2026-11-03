@@ -12,6 +12,7 @@
 #include <QObject>
 #include <QString>
 #include <QTimer>
+#include <QVariant>
 
 #include <HandleBase.h> // Handle<> / HandleLike
 #include "RunBase.h"    // 运行词汇底座：DoneFn / DeviceLock / Collector / CollectorLike
@@ -38,15 +39,16 @@
 class DeviceBase
 {
 public:
-    DeviceBase() = default;
+    DeviceBase(QString name, QString detail)
+        : displayName(std::move(name)), subtitle(std::move(detail)) {}
     Q_DISABLE_COPY_MOVE(DeviceBase)
 
     // 下级就绪谓词，模板层实现（→ HandleT::isOpen）。层级不变量：上级加锁的前提是下级已激活。
     // **公开**：界面据此显示连接状态——按"纯转发皮不留，虚函数直接公开"，不另包一层。
     [[nodiscard]] virtual bool isOpen() const noexcept = 0;
 
-    [[nodiscard]] virtual QString displayName() const = 0;
-    [[nodiscard]] virtual QString subtitle() const = 0;
+    const QString displayName;
+    const QString subtitle;
 
     // 纯 C++ 契约；具体末端直接以 Qt 信号覆写，不另设通知对象。
     virtual void lockChanged(HandleCore::ResourcePhase phase) = 0;
@@ -60,9 +62,12 @@ public:
 
     // ── 锁的只读面：给界面显示"占没占、谁占着"。[主]
     // **只作显示，裁判仍是 tryLock**：界面收到锁完成事件时现问一遍，点开始那一刻才真正抢锁。
-    [[nodiscard]] bool isLocked() const noexcept { return bool(lock_); }
-    // 占用者名字只从当前锁读取；空闲时返回空串，不另存显示缓存。
-    [[nodiscard]] QString holder() const { return lock_ ? lock_->holder() : QString(); }
+    // 无值表示空闲；有值表示占用，名称允许为空。不借出锁令牌，不另存显示缓存。
+    [[nodiscard]] std::optional<QString> holder() const
+    {
+        if (lock_) return lock_->holder();
+        return std::nullopt;
+    }
 
     // [主] 归还锁 + **喊一声**：**验锁进门**（lockMatches：空闲，或出示的正是持有者的令牌），
     // 槽本来就空则是空动作、不喊（与 tryLock 的空判对称：重复释放不重复喊）。
@@ -125,7 +130,7 @@ inline bool DeviceBase::tryLock(std::shared_ptr<const DeviceLock> lock)
     // **不是一个能持有的身份**。加一把空锁什么也没发生，那就该什么也不说。
     // **为什么返 true 而不是 false**：本口问的是**此刻这台设备能不能给我用**，而空令牌在空闲
     // 设备上当然能用（`canEngage` 刚点过头）；返 false 会让调用方误以为被谁占了。返 true 则
-    // 本口是**幂等**的——加空锁 / 放空锁都是可重复的空动作。代价明码：`返 true ⟺ isLocked()`
+    // 本口是**幂等**的——加空锁 / 放空锁都是可重复的空动作。代价明码：`返 true ⟺ holder().has_value()`
     // 这条对等关系只在令牌非空时成立，换来的是幂等性（用户定：后者更值钱）。
     // **空判必须排在 canEngage 之后**：别人占着 / 没连接时仍要如实返 false（那是真的用不了），
     // 而不是被"反正你也没锁"一句糊弄过去。
@@ -192,7 +197,7 @@ public:
     using OnConsume = std::function<void(std::shared_ptr<const CollectorT>)>;
 
     Device(QString name, QString subtitle, OnStream onStream, OnConsume onConsume, QObject *parent = nullptr)
-        : name_(std::move(name)), subtitle_(std::move(subtitle)),
+        : DeviceBase(std::move(name), std::move(subtitle)),
           onStream_(std::move(onStream)), onConsume_(std::move(onConsume))
     {
         this->setParent(parent);
@@ -204,8 +209,12 @@ public:
     }
 
     ~Device() override = default;
-    [[nodiscard]] QString displayName() const final { return name_; }
-    [[nodiscard]] QString subtitle() const final { return subtitle_; }
+    // Qt 属性边界：无效 QVariant 表示未占用，QString（含空串）表示占用。
+    [[nodiscard]] QVariant qmlHolder() const
+    {
+        const auto owner = holder();
+        return owner ? QVariant(*owner) : QVariant();
+    }
 
     // 初始化交接期间安装；首次 start 之前完成。关闭后由主线程清空，不与消费并发替换。
     void setOnConsume(OnConsume callback) { onConsume_ = std::move(callback); }
@@ -398,8 +407,6 @@ private:
             watchdog_.start(ms);
     }
 
-    const QString name_;
-    const QString subtitle_;
     const OnStream onStream_; // Handle 线程调用；所有者先销毁本 Device 再拆回调依赖。
     OnConsume onConsume_;     // 主线程调用；空回调表示本族无需消费完成帧。
 
