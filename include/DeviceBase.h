@@ -174,6 +174,8 @@ template <HandleLike HandleT, CollectorLike CollectorT>
 class Device : public HandleT, public DeviceBase
 {
 public:
+    using CollectorType = CollectorT;
+
     // 运行槽持具体型号 Collector；工厂和重试保持同型，族接口只在外部入口/结果处擦除。
 
     using OnStream = std::function<std::optional<typename CollectorT::Feed>(const QByteArray &, RxTime)>;
