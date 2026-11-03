@@ -73,3 +73,7 @@ DeviceBase 删除 logSourceObject 契约，Device 删除 logSource() 自引用�
 DeviceBase 在构造时接收名称与副标题，保存为 public const QString 成员；Device 模板不再重复保存。占用查询合为 optional<QString> holder()，nullopt 表示空闲，空名称仍表示占用；锁身份和验锁行为不变。Qt 具体设备用 MEMBER 暴露名称常量，holder 的 Qt 边界用无效 QVariant / QString 区分空闲与占用，不另存状态。
 
 本轮仅本地整理；集成验证记录见主程序 docs/maintenance/validation.md，不推送。
+
+## 2026-11-04：简化重复加锁判断（用户定）
+
+tryLock 先执行 canEngage，再用 lock_ == lock 同时覆盖同一令牌和双方为空；删除冗余 !lock 分支与长篇注释。未连接、异锁拒绝及实际加锁时的 Acquired 通知保持不变。仅本地整理，不推送。
