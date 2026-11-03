@@ -223,10 +223,10 @@ public:
         return rawSend(commands);
     }
 
-    // [主] 启动一次 run：锁 + 闲双门 → ① 现造本次的斗并装状态 → ② 发启动 → ③ 起表。
+    // [主] 准入后启动或替换 run：现造收集区、装入状态、发启动，再按新时限设置看门狗。
     // 发败时有看门狗则等重试；无看门狗则拒收，不能挂起一个没有恢复路径的请求。
-    // **check-then-store 而非 CAS**：转成非空的唯一写者就是本口（[主] 单线程），worker 与
-    // teardown 只会把它写成空——故"读到空即可放心装"不存在竞态。
+    // 主线程直接 store 替换未完成请求，不通知其旧回调；调用者负责旧等待的寿命。
+    // worker 若已 CAS 摘走旧状态，已取得的完成权不受新请求影响，仍排队交付。
     //
     // **形参是两件词汇，不是一份组装好的状态**：收**斗的原型份额** + 完成回调，
     // 状态怎么装是本层内政（State 私有嵌套）。三条收益：
@@ -245,27 +245,23 @@ public:
                              const std::shared_ptr<const DeviceLock> &lock)
     {
         // 本层只报告准入拒绝；后续发送失败由 Handle 报告。
-        if (!proto)
-        {
-            Q_EMIT this->logMessage(QStringLiteral("启动请求缺少 Collector，未启动"));
-            return false;
-        }
         if (!canEngage(lock))
         {
             Q_EMIT this->logMessage(QStringLiteral("设备未连接或正被占用，未启动"));
             return false;
         }
-        if (run_.load())
+        if (!proto)
         {
-            Q_EMIT this->logMessage(QStringLiteral("设备已有未结束的请求，未启动"));
+            Q_EMIT this->logMessage(QStringLiteral("启动请求缺少 Collector，未启动"));
             return false;
         }
         // makeSelf 按不可变配置另造独立的收集区，不复制原斗的收集状态。
         // const 仍允许读取收集区；可读范围和新斗初始状态依赖工厂契约，见 CollectorLike。
-        watchdog_.stop();
         const auto st = std::make_shared<const State>(proto->makeSelf(), std::move(done));
         run_.store(st);                             // ① 装状态（斗 + 回调一体）
         const int ms = st->collector->timeoutMs();
+        if (ms <= 0) // 新请求不设表时，撤掉旧请求的计时；也覆盖随后发送失败的返回路径。
+            watchdog_.stop();
         if (!rawSend(st->collector->buildStart()) && ms <= 0)
         {
             // 收包若已完成并摘走状态，仍按已排队的结果交付；否则撤销并由等待器处理拒收。

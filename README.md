@@ -91,3 +91,12 @@ releaseLock 验证令牌后直接调用 dropLock，不为已有幂等行为增�
 Device 删除 open/close 薄转发，直接继承 Handle 的连接入口；isOpen 保留为 DeviceBase 契约实现。采集 start/stop 不改。setOnConsume 暂留，仍只用于处理线程交接期间安装及关闭后的清空，族基和官邸后续整理时再审查。
 
 验证：Windows Qt 6.11.2/MSVC 的公开头和独立构建、CTest 1/1 通过（build-identity/open-close-build.log）。HandleCore 固定本地 9d74a19b91494354b3709bed04603a61ed3408bd，联调用相邻源码覆盖；未推送。
+
+
+## 2026-11-04：start 在线替换（用户定）
+
+验证：Windows/MSVC/Qt 6.11.2 主程序增量构建和八秒离屏冒烟通过；主程序生命周期专项 `start_replacement` 通过，覆盖准入顺序、同锁替换、正/非正新时限、发送失败、旧完成消息和在途收集被替换。不代表 Linux 或硬件验证。
+
+先 canEngage 验连接/锁，再检查原型非空；删除已有 run 的拒收。通过准入即可直接 store 新状态，未完成旧请求被替换、不额外下发旧停机或通知旧回调；调用方负责旧等待寿命。worker 已 CAS 摘走的完成帧仍按原消费/通知链交付。
+
+删除 start 开头无条件停看门狗：新时限为正时直接 start(ms) 重置，非正时 stop 撤掉旧表，且停表先于无超时发送失败的返回。主线程同步启动过程不泵事件，不新增运行状态、锁或转发。
