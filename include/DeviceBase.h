@@ -204,16 +204,8 @@ public:
     // 初始化交接期间安装；首次 start 之前完成。关闭后由主线程清空，不与消费并发替换。
     void setOnConsume(OnConsume callback) { onConsume_ = std::move(callback); }
 
-
-    // 强制断开不验占用；关闭前同步撤单和释放锁，再等待收包退出。
-    void close() { HandleT::stop(); }
-
     // 层级不变量：加锁的前提是 Handle 已激活。公开：设备页据此显示连接状态。
     [[nodiscard]] bool isOpen() const noexcept final { return HandleT::isOpen(); }
-
-public:
-    // 官邸完成参数校验后交入连接快照；换参重连同样是强制通道，不验占用。
-    bool open(const auto &params) { return HandleT::start(params); }
 
     // [主] 官邸命令组连发口：先验 `canEngage(lock)`——锁对（空闲，或出示的正是
     // 持有者的令牌）且设备已连接，才逐帧发出（用户定：直发不走收集器，但验锁照验；设备连上了才能发数据）。
@@ -300,7 +292,7 @@ public:
 protected:
     void PreDestruction() noexcept override
     {
-        HandleT::stop();
+        HandleT::close();
         // 所有者在自身预析构内销毁本对象；回调依赖仍在，DAQ 处理线程已退出。
         // 借用者先撤销，再收本地等待；停机命令交给 Handle，发送失败不妨碍本地撤销。
         teardown();

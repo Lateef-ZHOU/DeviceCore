@@ -14,7 +14,7 @@
 
 Device<H,C> 继承 H 与非 QObject 的 DeviceBase，直接重写上传 onData；具体官邸提供 final Qt 末端，构造时接收名称、onStream 与 onConsume 回调。流回调在 Handle 线程执行，完成消费在主线程先于等待器通知执行；无需消费的族传空消费回调。Device 不认识设备族，不再提供 onCompleted/onStream 业务虚口。
 
-拥有者在自身派生状态销毁前删除 Device；末端析构首句调用 PreDestruction，先同步停止 Handle，再撤销运行/锁。中间 Device/传输层析构不重复执行预析构；移除 retiring，名单通过 QObject::destroyed 在族对象清理前移除。QObject 父子所有权仅作构造失败兜底。open/start/send/stop 是拥有者使用的 C++ 入口，不是 Qt 槽。setOnConsume 仅用于首次启动前的同步安装和关闭后的主线程清空，不支持运行中并发更换。
+拥有者在自身派生状态销毁前删除 Device；末端析构首句调用 PreDestruction，先同步停止 Handle，再撤销运行/锁。中间 Device/传输层析构不重复执行预析构；移除 retiring，名单通过 QObject::destroyed 在族对象清理前移除。QObject 父子所有权仅作构造失败兜底。open/close 是继承的连接入口，start/send/stop 是采集与发令入口，均为 C++ 入口，不是 Qt 槽。setOnConsume 仅用于首次启动前的同步安装和关闭后的主线程清空，不支持运行中并发更换。
 
 2026-11-02：Handle 的 connectionChanged(ResourcePhase) 中，AboutToRelease 在 stop 促断前同步触发 Device 撤单/释放锁。DeviceBase 声明纯虚 lockChanged(ResourcePhase)，Qt 末端直接以信号实现，只在锁槽实际变化后发 Acquired/Released；重复取得同一锁或重复归还不另通知。删除 statusChanged 和 finished 中转。isOpen/isLocked/holder 为按需回读属性，不把枚举冒充布尔属性的 NOTIFY，不保存另一份连接或锁状态。迟到的完成阶段不能撤掉新任务，已完成帧仍消费，退出不新增排空。
 
@@ -84,3 +84,10 @@ releaseLock 验证令牌后直接调用 dropLock，不为已有幂等行为增�
 
 
 2026-11-04：Device 删除 HandleType、FeedType 简单别名，收包回调直接使用 CollectorT::Feed。CollectorType 暂留：改为族模板显式接收 Collector 类型后，MSVC 对结构体模板参数与协变返回的组合报错；已独立复现。用户确认暂留 CollectorType，避免扩大改动，不增加编译期类型提取或调整协变接口。qmlHolder、收发及运行行为不变，未推送。
+
+
+## 2026-11-04：Handle 连接入口统一（用户定）
+
+Device 删除 open/close 薄转发，直接继承 Handle 的连接入口；isOpen 保留为 DeviceBase 契约实现。采集 start/stop 不改。setOnConsume 暂留，仍只用于处理线程交接期间安装及关闭后的清空，族基和官邸后续整理时再审查。
+
+验证：Windows Qt 6.11.2/MSVC 的公开头和独立构建、CTest 1/1 通过（build-identity/open-close-build.log）。HandleCore 固定本地 9d74a19b91494354b3709bed04603a61ed3408bd，联调用相邻源码覆盖；未推送。
