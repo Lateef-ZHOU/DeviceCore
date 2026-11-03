@@ -174,13 +174,9 @@ template <HandleLike HandleT, CollectorLike CollectorT>
 class Device : public HandleT, public DeviceBase
 {
 public:
-    using HandleType = HandleT;
-    using CollectorType = CollectorT;
-    using FeedType = typename CollectorT::Feed; // 喂斗的那一口是什么（采集卡族字节、云台族位形）
-
     // 运行槽持具体型号 Collector；工厂和重试保持同型，族接口只在外部入口/结果处擦除。
 
-    using OnStream = std::function<std::optional<FeedType>(const QByteArray &, RxTime)>;
+    using OnStream = std::function<std::optional<typename CollectorT::Feed>(const QByteArray &, RxTime)>;
     using OnConsume = std::function<void(std::shared_ptr<const CollectorT>)>;
 
     Device(QString name, QString subtitle, OnStream onStream, OnConsume onConsume, QObject *parent = nullptr)

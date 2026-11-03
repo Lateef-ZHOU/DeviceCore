@@ -81,3 +81,6 @@ tryLock 先执行 canEngage，再用 lock_ == lock 同时覆盖同一令牌和�
 ## 2026-11-04：释放锁只保留验锁（用户定）
 
 releaseLock 验证令牌后直接调用 dropLock，不为已有幂等行为增加空槽判断；空槽不摇铃、不发 Released 的保证统一由 dropLock 实现。释放和通知行为保持，未推送。
+
+
+2026-11-04：Device 删除 HandleType、CollectorType、FeedType 简单别名；DAQ/GMB 模板显式接收具体 Collector 类型，官邸同步适配。收包回调直接使用 CollectorT::Feed，类型约束和运行行为保持，qmlHolder 不变。本轮本地整理，验证记录见主程序维护操作，未推送。
