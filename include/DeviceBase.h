@@ -150,6 +150,35 @@ inline void DeviceBase::dropLock() noexcept
     }
 }
 
+// 末端官邸按需选用运行机制；仅两参数版本可提交 Collector。
+template <HandleLike HandleT, typename CollectorT = void>
+    requires (std::same_as<CollectorT, void> || CollectorLike<CollectorT>)
+class Device;
+
+template <HandleLike HandleT>
+class Device<HandleT, void> : public HandleT, public DeviceBase
+{
+protected:
+    Device(QString name, QString detail, QObject *parent = nullptr)
+        : DeviceBase(std::move(name), std::move(detail))
+    {
+        this->setParent(parent);
+        QObject::connect(this, &HandleT::connectionChanged, this, [this](HandleCore::ResourcePhase phase) {
+            if (phase == HandleCore::ResourcePhase::AboutToRelease)
+                this->dropLock();
+        });
+    }
+
+    void PreDestruction() noexcept override
+    {
+        HandleT::close();
+        DeviceBase::PreDestruction();
+    }
+
+public:
+    [[nodiscard]] bool isOpen() const noexcept final { return HandleT::isOpen(); }
+};
+
 // ============================================================
 // Device<HandleT, CollectorT> — 设备模板层（双钉扣模板口 HandleLike + CollectorLike）：锁骨架
 // 之上住着**一次 run 的全部状态**（看门狗重试由设备内部处理，不进入协程）：
@@ -171,7 +200,7 @@ inline void DeviceBase::dropLock() noexcept
 // ============================================================
 // 族层拥有一台具体 Device，通过回调接入数据流与完成帧；机制层不认识族或官邸。
 template <HandleLike HandleT, CollectorLike CollectorT>
-class Device : public HandleT, public DeviceBase
+class Device<HandleT, CollectorT> : public HandleT, public DeviceBase
 {
 public:
     using CollectorType = CollectorT;
@@ -194,6 +223,7 @@ public:
     }
 
     ~Device() override = default;
+
     // Qt 属性边界：无效 QVariant 表示未占用，QString（含空串）表示占用。
     [[nodiscard]] QVariant qmlHolder() const
     {
