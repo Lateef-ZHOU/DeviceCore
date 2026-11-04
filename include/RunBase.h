@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <concepts>
 #include <functional>
 #include <memory>
@@ -8,7 +9,8 @@
 #include <QList>
 #include <QString>
 
-#include "RxTime.h"
+// 收包时刻按值传递，由消费端决定显示或保存格式。
+using RxTime = std::chrono::system_clock::time_point;
 
 // ============================================================
 // RunBase.h — 一次 run 的词汇底座：一个契约基类（Collector）+ 配套机制词
@@ -97,7 +99,7 @@ public:
     // 这道闸；但"到不了"与"调不着"是两回事，这里要的是后者。
     // **代价明码**：每口料多算一次 `settled()`。各家的判据都是几条比较（缓冲长度 / 计数 / 两个
     // 时刻之差），而进料是百赫兹量级，这笔换"型号不必自己收尾"是划算的。
-    // `at` = 这一口料的**到料时刻**（Handle 层交上来，网口是内核盖的章；见 RxTime 的长注）。
+    // `at` = 这一口料的**到料时刻**（Handle 层交上来，网口是内核盖的章）。
     // 谁用谁决定：采集卡族拿它盖帧时刻，云台族不用（判到位量的是**时长**，见 GMBCollector）。
     // 空输入不喂料、不触发完成；非空 optional 原样交给实际消费数据的 onFeed。
     bool feed(const std::optional<FeedT> &item, const RxTime at)
