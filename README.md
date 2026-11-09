@@ -1,5 +1,7 @@
 # DeviceCore
 
+2026-11-09 用户定（DAQ 第二步）：删除只读原型的 start 重载，start 只收调用方新造、独占的可写 Collector；启动不再 makeSelf，看门狗重试仍 makeSelf。
+
 2026-11-09 用户定：Device 新增 `start(std::shared_ptr<CollectorT>, done, lock)` 重载，接收调用方新造、独占的可写 Collector 直接装入运行槽，不在启动时 makeSelf；看门狗重试仍 makeSelf。原只读原型重载保留给尚未改造的 DAQ，改造完成后删除。准入、替换与看门狗语义不变。
 
 设备运行基类、Collector 收集契约、DeviceLock 和运行槽。Windows / Linux，C++20，CMake ≥ 3.28。

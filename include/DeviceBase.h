@@ -253,47 +253,17 @@ public:
         return HandleT::send(commands);
     }
 
-    // [主] 准入后启动或替换 run：现造收集区、装入状态、发启动，再设置看门狗。
+    // [主] 准入后启动或替换 run：装入调用方新造、独占的可写收集器，发启动，再设置看门狗。
     // 返回 true 表示接受请求，不保证发送或收集成功；非正时限不重试，也不因发送失败撤单。
     // 主线程直接 store 替换未完成请求，不通知其旧回调；调用者负责旧等待的寿命。
     // worker 若已 CAS 摘走旧状态，已取得的完成权不受新请求影响，仍排队交付。
     //
-    // **形参是两件词汇，不是一份组装好的状态**：收**斗的原型份额** + 完成回调，
-    // 状态怎么装是本层内政（State 私有嵌套）。三条收益：
-    //   · 下单方（族口 begin）不必认识 State——它只管交出两件词汇；
-    //   · **现造落在唯一需要它的地方**：本次 run 的那只斗由本口照 `proto` 的指示区现造
-    //     （`makeSelf`），`proto` 是别人的东西，本口自始至终只读它。工厂须返回独立的新斗，
-    //     使设备的收集区与下单方留着的原型隔离；此要求须由工厂实现遵守。
-    //   · 完成回调按值收 + move 入槽（不是 const&）：它是**转交**不是照原型复制，多一次
-    //     std::function 拷贝就可能多一次堆分配。
+    // **形参是两件词汇，不是一份组装好的状态**：收本次 run 的那只斗 + 完成回调，状态怎么装是本层
+    // 内政（State 私有嵌套）。斗由族模板层按请求参数现造并交出所有权，交入后调用方不得再写；
+    // 启动时不 makeSelf，看门狗重试才按其不可变配置 makeSelf 另造新斗。完成回调按值收 + move 入槽。
     //
-    // **收份额原物，不收解引用后的视图**（本仓铁律"代客解引用害人害己"）：形参若是
-    // `const CollectorT &`，族口 `begin` 就得写 `proto && this->start(*proto, …)`——**判空与解引用
-    // 被推给了传递端**，而那正是禁令要挡的形状。空份额是"这单没下成"的正当回答（`collectorFor`
-    // 够不着时返的就是它），对它的响应理应写在**原语体内**：本口判空、返 false。
-    [[nodiscard]] bool start(const std::shared_ptr<const CollectorT> &proto, DoneFn<CollectorT> done,
-                             const std::shared_ptr<const DeviceLock> &lock)
-    {
-        // 本层只报告准入拒绝；后续发送失败由 Handle 报告。
-        if (!canEngage(lock))
-        {
-            Q_EMIT this->logMessage(QStringLiteral("设备未连接或正被占用，未启动"));
-            return false;
-        }
-        if (!proto)
-        {
-            Q_EMIT this->logMessage(QStringLiteral("启动请求缺少 Collector，未启动"));
-            return false;
-        }
-        // makeSelf 按不可变配置另造独立的收集区，不复制原斗的收集状态。
-        // const 仍允许读取收集区；可读范围和新斗初始状态依赖工厂契约，见 CollectorLike。
-        launch(std::make_shared<const State>(proto->makeSelf(), std::move(done)));
-        return true;
-    }
-
-    // [主] 调用方新造、独占的可写收集器直接装入运行槽，不再 makeSelf；准入与替换语义同上。
-    // 交入后调用方不得再写该对象；看门狗重试仍按其不可变配置 makeSelf 另造新斗。
-    // 只读原型重载留给尚未改造的族，改造完成后删除。
+    // **收份额原物，不收解引用后的视图**（本仓铁律"代客解引用害人害己"）：空份额是"这单没下成"的
+    // 正当回答（型号判参数不合时造不出斗），对它的响应写在**原语体内**：本口判空、返 false。
     [[nodiscard]] bool start(std::shared_ptr<CollectorT> collector, DoneFn<CollectorT> done,
                              const std::shared_ptr<const DeviceLock> &lock)
     {
