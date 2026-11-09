@@ -287,14 +287,27 @@ public:
         }
         // makeSelf 按不可变配置另造独立的收集区，不复制原斗的收集状态。
         // const 仍允许读取收集区；可读范围和新斗初始状态依赖工厂契约，见 CollectorLike。
-        const auto st = std::make_shared<const State>(proto->makeSelf(), std::move(done));
-        run_.store(st);                             // ① 装状态（斗 + 回调一体）
-        (void)HandleT::send(st->collector->buildStart());
-        const int ms = st->collector->timeoutMs();
-        if (ms <= 0) // 发送后按新请求的时限统一设置看门狗。
-            watchdog_.stop();
-        else
-            watchdog_.start(ms);
+        launch(std::make_shared<const State>(proto->makeSelf(), std::move(done)));
+        return true;
+    }
+
+    // [主] 调用方新造、独占的可写收集器直接装入运行槽，不再 makeSelf；准入与替换语义同上。
+    // 交入后调用方不得再写该对象；看门狗重试仍按其不可变配置 makeSelf 另造新斗。
+    // 只读原型重载留给尚未改造的族，改造完成后删除。
+    [[nodiscard]] bool start(std::shared_ptr<CollectorT> collector, DoneFn<CollectorT> done,
+                             const std::shared_ptr<const DeviceLock> &lock)
+    {
+        if (!canEngage(lock))
+        {
+            Q_EMIT this->logMessage(QStringLiteral("设备未连接或正被占用，未启动"));
+            return false;
+        }
+        if (!collector)
+        {
+            Q_EMIT this->logMessage(QStringLiteral("启动请求缺少 Collector，未启动"));
+            return false;
+        }
+        launch(std::make_shared<const State>(std::move(collector), std::move(done)));
         return true;
     }
 
@@ -351,6 +364,18 @@ private:
         std::shared_ptr<CollectorT> collector; // 指示区 const、收集区 [仅 worker] 可写
         DoneFn<CollectorT> done;               // 促发即交付（斗份额非空 = 成了，空 = 没成）
     };
+
+    // [主] 装入新状态、发启动命令，再按新请求的时限统一设置看门狗。
+    void launch(const std::shared_ptr<const State> &st)
+    {
+        run_.store(st);
+        (void)HandleT::send(st->collector->buildStart());
+        const int ms = st->collector->timeoutMs();
+        if (ms <= 0)
+            watchdog_.stop();
+        else
+            watchdog_.start(ms);
+    }
 
     // [主] 停看门狗并原子摘走当前运行；只有拿到状态的调用者能撤销等待。
     // 无条件尝试发送停机命令；连接/发送失败由 Handle 报告，仍须通知等待者本次已撤销。
