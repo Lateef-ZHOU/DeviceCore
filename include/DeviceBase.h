@@ -201,12 +201,8 @@ public:
 
     // 运行槽持具体型号 Collector；工厂和重试保持同型，族接口只在外部入口/结果处擦除。
 
-    using OnStream = std::function<std::optional<typename CollectorT::Feed>(const QByteArray &, RxTime)>;
-    using OnConsume = std::function<void(std::shared_ptr<const CollectorT>)>;
-
-    Device(QString name, QString subtitle, OnStream onStream, OnConsume onConsume, QObject *parent = nullptr)
-        : DeviceBase(std::move(name), std::move(subtitle)),
-          onStream_(std::move(onStream)), onConsume_(std::move(onConsume))
+    Device(QString name, QString subtitle, QObject *parent = nullptr)
+        : DeviceBase(std::move(name), std::move(subtitle))
     {
         this->setParent(parent);
         static_assert(DeviceLifecycleLayer<Device, decltype(&Device::PreDestruction)>);
@@ -224,9 +220,6 @@ public:
         const auto owner = holder();
         return owner ? QVariant(*owner) : QVariant();
     }
-
-    // 初始化交接期间安装；首次 start 之前完成。关闭后由主线程清空，不与消费并发替换。
-    void setOnConsume(OnConsume callback) { onConsume_ = std::move(callback); }
 
     // 层级不变量：加锁的前提是 Handle 已激活。公开：设备页据此显示连接状态。
     [[nodiscard]] bool isOpen() const noexcept final { return HandleT::isOpen(); }
@@ -380,14 +373,17 @@ private:
         launch(next); // ④ 重发启动命令并再起表（同一个 run，锁在 start 时已验）
     }
 
-    const OnStream onStream_; // Handle 线程调用；所有者先销毁本 Device 再拆回调依赖。
-    OnConsume onConsume_;     // 主线程调用；空回调表示本族无需消费完成帧。
+    // [Handle 收包线程] 一口上行 → 喂给收集器的那一口（空 = 这口没有给斗的）；族模板层实现。
+    // 末端析构首句的 PreDestruction 先关闭 Handle 并等收包线程退出，派生部分析构后不会再被调用。
+    [[nodiscard]] virtual std::optional<typename CollectorT::Feed> onStream(const QByteArray &raw, RxTime at) = 0;
+    // [主] 完成帧在通知等待者之前先交本口消费；默认不消费。
+    virtual void onConsume(const std::shared_ptr<const CollectorT> &) {}
 
     // Handle 在收包线程直接虚派发，不保存 this 闭包。
     void onData(const QByteArray &raw, RxTime at) final
     {
         // ① 常态旁路：先于闲忙门，没在跑也照跑；交回的是**喂斗的那一口**（空 = 没有给斗的）
-        const auto fed = this->onStream_(raw, at);
+        const auto fed = this->onStream(raw, at);
         auto st = this->run_.load(); // ② 状态促取：空 = idle 丢（CAS 要可写 expected，故非 const）
         if (!st || !st->collector->feed(fed, at)) // ③ 原样交料；Collector 处理空输入与完成判定。
             return;
@@ -405,8 +401,7 @@ private:
                 // 仅空槽时停表：主线程在此不泵事件，worker 只能摘空，不能插入新尝试。
                 if (!this->run_.load())
                     this->watchdog_.stop();
-                if (this->onConsume_)
-                    this->onConsume_(st->collector);
+                this->onConsume(st->collector);
                 // 消费已提交；族级等待器只接收完成结果，失效也不撤回已提交的帧。
                 st->done(st->collector);
             },
