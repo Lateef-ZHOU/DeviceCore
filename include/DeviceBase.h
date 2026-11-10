@@ -277,7 +277,9 @@ public:
             Q_EMIT this->logMessage(QStringLiteral("启动请求缺少 Collector，未启动"));
             return false;
         }
-        launch(std::make_shared<const State>(std::move(collector), std::move(done)));
+        const auto st = std::make_shared<const State>(std::move(collector), std::move(done));
+        run_.store(st);
+        launch(*st);
         return true;
     }
 
@@ -335,12 +337,13 @@ private:
         DoneFn<CollectorT> done;               // 促发即交付（斗份额非空 = 成了，空 = 没成）
     };
 
-    // [主] 装入新状态、发启动命令，再按新请求的时限统一设置看门狗。
-    void launch(const std::shared_ptr<const State> &st)
+    // [主] 已装入的状态：发启动命令，再按其时限设置看门狗。首次启动与看门狗重试共用。
+    // **非正时限即不设表**（NoWatchdogMs，见 RunBase.h）：结构上没有终点的 run（连续运动）不存在"卡住"，
+    // 起了表只会周期性重发；不起表的 run 由取消或主动关闭结束。
+    void launch(const State &st)
     {
-        run_.store(st);
-        (void)HandleT::send(st->collector->buildStart());
-        const int ms = st->collector->timeoutMs();
+        (void)HandleT::send(st.collector->buildStart());
+        const int ms = st.collector->timeoutMs();
         if (ms <= 0)
             watchdog_.stop();
         else
@@ -361,7 +364,7 @@ private:
 
     // [主·看门狗到点] 状态在岗才动（run 已结 → 静默，表不再起）→ 造新斗、CAS 顶替（旧斗此后即便
     // 判齐，worker 的交付 CAS 也必失败 = 作废；若 worker 抢先摘走了状态，则本次 CAS 失败、交付照常）
-    // → 重发启动命令 → 再起表。超时重试由设备内部处理，不唤醒协程。
+    // → 经 launch 重发启动命令并再起表。超时重试由设备内部处理，不唤醒协程。
     void restart()
     {
         auto old = run_.load(); // ① 读现状（CAS 要可写 expected，故非 const——同收包回调）。
@@ -380,12 +383,7 @@ private:
         //    此后只读 next，故直接把 old 交出去即可，不必另立一个只为过一遍类型的局部量。
         if (!run_.compare_exchange_strong(old, next))
             return;
-        HandleT::send(next->collector->buildStart()); // ④ 重发启动命令（同一个 run，锁在 start 时已验）
-        // ⑤ 起表——**非正时限即不设表**（NoWatchdogMs，见 RunBase.h）：结构上没有终点的 run
-        // （连续运动）不存在"卡住"，起了表只会周期性重发。不起表 ⇒ 本口不再被触发，
-        // 未自然完成的 run 由取消或主动关闭结束。
-        if (const int ms = next->collector->timeoutMs(); ms > 0)
-            watchdog_.start(ms);
+        launch(*next); // ④ 重发启动命令并再起表（同一个 run，锁在 start 时已验）
     }
 
     const OnStream onStream_; // Handle 线程调用；所有者先销毁本 Device 再拆回调依赖。
