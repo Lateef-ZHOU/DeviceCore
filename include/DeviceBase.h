@@ -273,7 +273,7 @@ public:
         }
         const auto st = std::make_shared<const State>(std::move(collector), std::move(done));
         run_.store(st);
-        launch(*st);
+        launch(st);
         return true;
     }
 
@@ -334,10 +334,10 @@ private:
     // [主] 已装入的状态：发启动命令，再按其时限设置看门狗。首次启动与看门狗重试共用。
     // **非正时限即不设表**（NoWatchdogMs，见 RunBase.h）：结构上没有终点的 run（连续运动）不存在"卡住"，
     // 起了表只会周期性重发；不起表的 run 由取消或主动关闭结束。
-    void launch(const State &st)
+    void launch(const std::shared_ptr<const State> &st)
     {
-        (void)HandleT::send(st.collector->buildStart());
-        const int ms = st.collector->timeoutMs();
+        (void)HandleT::send(st->collector->buildStart());
+        const int ms = st->collector->timeoutMs();
         if (ms <= 0)
             watchdog_.stop();
         else
@@ -377,7 +377,7 @@ private:
         //    此后只读 next，故直接把 old 交出去即可，不必另立一个只为过一遍类型的局部量。
         if (!run_.compare_exchange_strong(old, next))
             return;
-        launch(*next); // ④ 重发启动命令并再起表（同一个 run，锁在 start 时已验）
+        launch(next); // ④ 重发启动命令并再起表（同一个 run，锁在 start 时已验）
     }
 
     const OnStream onStream_; // Handle 线程调用；所有者先销毁本 Device 再拆回调依赖。
