@@ -58,7 +58,17 @@ public:
     // 占用者名字由锁在创建时持有，设备只接收锁份额。
     // **空令牌是空动作**（返 true、不落槽、不喊话——见定义处），故本口幂等；
     // 返 false 只有一个意思：**此刻这台设备用不了**（别人占着 / 没连接）。
-    [[nodiscard]] bool tryLock(std::shared_ptr<const DeviceLock> lock);
+    [[nodiscard]] bool tryLock(std::shared_ptr<const DeviceLock> lock)
+    {
+        if (!canEngage(lock))
+            return false; // 别人占着 / 没连接：这台设备此刻用不了
+        // 同一锁（包括双方为空）不改变状态、不重复通知。
+        if (lock_ == lock)
+            return true;
+        lock_ = std::move(lock);
+        Q_EMIT lockChanged(HandleCore::ResourcePhase::Acquired);
+        return true;
+    }
 
     // ── 锁的只读面：给界面显示"占没占、谁占着"。[主]
     // **只作显示，裁判仍是 tryLock**：界面收到锁完成事件时现问一遍，点开始那一刻才真正抢锁。
@@ -78,7 +88,12 @@ public:
     // 调用方遂不必自带核对——后处理模块“整张名单照放”正是靠这一条。
     // 主动关闭与析构都不借本口验锁，直接用 dropLock 收锁；
     // dropLock 在锁槽实际变动后发 Released。
-    void releaseLock(const std::shared_ptr<const DeviceLock> &lock);
+    void releaseLock(const std::shared_ptr<const DeviceLock> &lock)
+    {
+        if (!lockMatches(lock))
+            return; // 不是持有者出示的令牌：不动别人的锁（"期间已易主"在此当场挡下）
+        dropLock();
+    }
 
     // [主] 两级只读鉴权，族接口经 device() 共用，不为每个操作另造 canXXX 转发。
     // 锁谓词：**空闲，或出示的正是槽里那一枚**（一次指针比较）。
@@ -98,7 +113,15 @@ protected:
     virtual void PreDestruction() noexcept { dropLock(); }
 
     // [主] 摘锁并摇铃；实际摘下锁时统一发 Released，重复调用为空动作。
-    void dropLock() noexcept;
+    void dropLock() noexcept
+    {
+        const auto token = std::exchange(lock_, {}); // 摘出即防重入
+        if (token)
+        {
+            token->ring(); // 摇令牌即取消：收协程当前的等待
+            Q_EMIT lockChanged(HandleCore::ResourcePhase::Released);
+        }
+    }
 
 private:
 
@@ -120,35 +143,6 @@ concept DeviceLifecycleLayer = std::derived_from<T, QObject>
 
 template <typename T, typename Member>
 concept FinalDevice = DeviceLifecycleLayer<T, Member> && std::is_final_v<T> && (!std::is_abstract_v<T>);
-
-inline bool DeviceBase::tryLock(std::shared_ptr<const DeviceLock> lock)
-{
-    if (!canEngage(lock))
-        return false; // 别人占着 / 没连接：这台设备此刻用不了
-    // 同一锁（包括双方为空）不改变状态、不重复通知。
-    if (lock_ == lock)
-        return true;
-    lock_ = std::move(lock);
-    Q_EMIT lockChanged(HandleCore::ResourcePhase::Acquired);
-    return true;
-}
-
-inline void DeviceBase::releaseLock(const std::shared_ptr<const DeviceLock> &lock)
-{
-    if (!lockMatches(lock))
-        return; // 不是持有者出示的令牌：不动别人的锁（"期间已易主"在此当场挡下）
-    dropLock();
-}
-
-inline void DeviceBase::dropLock() noexcept
-{
-    const auto token = std::exchange(lock_, {}); // 摘出即防重入
-    if (token)
-    {
-        token->ring(); // 摇令牌即取消：收协程当前的等待
-        Q_EMIT lockChanged(HandleCore::ResourcePhase::Released);
-    }
-}
 
 // 末端官邸按需选用运行机制；仅两参数版本可提交 Collector。
 template <HandleLike HandleT, typename CollectorT = void>
@@ -390,7 +384,34 @@ private:
     OnConsume onConsume_;     // 主线程调用；空回调表示本族无需消费完成帧。
 
     // Handle 在收包线程直接虚派发，不保存 this 闭包。
-    void onData(const QByteArray &raw, RxTime at) final;
+    void onData(const QByteArray &raw, RxTime at) final
+    {
+        // ① 常态旁路：先于闲忙门，没在跑也照跑；交回的是**喂斗的那一口**（空 = 没有给斗的）
+        const auto fed = this->onStream_(raw, at);
+        auto st = this->run_.load(); // ② 状态促取：空 = idle 丢（CAS 要可写 expected，故非 const）
+        if (!st || !st->collector->feed(fed, at)) // ③ 原样交料；Collector 处理空输入与完成判定。
+            return;
+        // ④ **一道闸**：CAS 摘状态 = 同时取得"投递权"与"这次 run 的结果所有权"。
+        //    失败 = 状态已易主（看门狗换斗顶替 / teardown 清空），本斗已废、不投递（失败路
+        //    expected 已被改写成现值，绝不可再用）。成功即独占：此后 worker 见空槽即 idle，
+        //    份额上行后使用端只读零竞态由此奠基。
+        if (!this->run_.compare_exchange_strong(st, {}))
+            return;
+        QMetaObject::invokeMethod(
+            this,
+            [this, st] // 携状态投递（CAS 一次性 ⇒ 同一份状态恒至多一次投递）
+            {
+                // [主] st 已赢得完成权，仍须交付；run_ 可能已装入后来启动的尝试。
+                // 仅空槽时停表：主线程在此不泵事件，worker 只能摘空，不能插入新尝试。
+                if (!this->run_.load())
+                    this->watchdog_.stop();
+                if (this->onConsume_)
+                    this->onConsume_(st->collector);
+                // 消费已提交；族级等待器只接收完成结果，失效也不撤回已提交的帧。
+                st->done(st->collector);
+            },
+            Qt::QueuedConnection);
+    }
 
     // [主写 / worker 读+摘] 当前 run 的状态**单槽**：在岗 ⟺ run 进行中；CAS 摘出即注销。
     // **不可变快照 + 整块换指针**：谁都不原地改指向物，主线程换新的、worker 摘空的（见上面的
@@ -401,35 +422,5 @@ private:
 
     // 末端析构首句调用 PreDestruction，保护上传所访问的 Device 与官邸状态。
 };
-
-template <HandleLike HandleT, CollectorLike CollectorT>
-void Device<HandleT, CollectorT>::onData(const QByteArray &raw, const RxTime at)
-{
-    // ① 常态旁路：先于闲忙门，没在跑也照跑；交回的是**喂斗的那一口**（空 = 没有给斗的）
-    const auto fed = this->onStream_(raw, at);
-    auto st = this->run_.load(); // ② 状态促取：空 = idle 丢（CAS 要可写 expected，故非 const）
-    if (!st || !st->collector->feed(fed, at)) // ③ 原样交料；Collector 处理空输入与完成判定。
-        return;
-    // ④ **一道闸**：CAS 摘状态 = 同时取得"投递权"与"这次 run 的结果所有权"。
-    //    失败 = 状态已易主（看门狗换斗顶替 / teardown 清空），本斗已废、不投递（失败路
-    //    expected 已被改写成现值，绝不可再用）。成功即独占：此后 worker 见空槽即 idle，
-    //    份额上行后使用端只读零竞态由此奠基。
-    if (!this->run_.compare_exchange_strong(st, {}))
-        return;
-    QMetaObject::invokeMethod(
-        this,
-        [this, st] // 携状态投递（CAS 一次性 ⇒ 同一份状态恒至多一次投递）
-        {
-            // [主] st 已赢得完成权，仍须交付；run_ 可能已装入后来启动的尝试。
-            // 仅空槽时停表：主线程在此不泵事件，worker 只能摘空，不能插入新尝试。
-            if (!this->run_.load())
-                this->watchdog_.stop();
-            if (this->onConsume_)
-                this->onConsume_(st->collector);
-            // 消费已提交；族级等待器只接收完成结果，失效也不撤回已提交的帧。
-            st->done(st->collector);
-        },
-        Qt::QueuedConnection);
-}
 
 // 族接口经组合持有的 Device 启动与撤单；单据和等待器见 TaskCore 的 DeviceCoro.h。
