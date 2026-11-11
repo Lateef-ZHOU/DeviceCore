@@ -19,9 +19,9 @@ using RxTime = std::chrono::system_clock::time_point;
 // DeviceCoro.h = 协程编排层。
 //
 // 两条支柱：
-// ① **一次 run 的一切都在 Collector 上**：命令（buildStart/buildStop）、时限（timeoutMs）、
-//    攒料判齐（feed）、自造下一只（makeSelf）。一斗 = 一次尝试；换斗即重试，新斗由旧斗照自己的
-//    **指示区**现造，参数遂不必另立一个类来存。
+// ① **一次 run 的一切都在 Collector 上**：请求参数（parameters）、命令（buildStart/buildStop）、
+//    时限（timeoutMs）、攒料判齐（feed）。一斗 = 一次尝试；换斗即重试，看门狗以旧斗的同一份参数
+//    构造新斗——型号收集器必须能由 const Params& 公开构造。
 // ② **run 状态住 Device 的单槽，而本文件不认识那个状态**：斗与完成回调怎么装在一起、装在哪，
 //    是设备内政（私有嵌套聚合 `Device::State` + 看门狗表，见 DeviceBase.h）。运行层契约对外
 //    只有两件词汇——**一只斗**与**一个完成回调**，下单方交出这两件即止。状态在岗
@@ -82,11 +82,15 @@ private:
     std::function<void()> bell_;
 };
 
-template <typename FeedT>
+template <typename FeedT, typename ParamsT>
 class Collector
 {
 public:
-    using Feed = FeedT; // 本族喂给斗的那一口是什么（Device 据此定 onStream 的返回型）
+    using Feed = FeedT;     // 本族喂给斗的那一口是什么（Device 据此定 onStream 的返回型）
+    using Params = ParamsT; // 本族一次请求的参数（族口 begin 收它；看门狗以它另造新斗）
+
+    // 本次尝试的请求参数：出生即定，多线程只读。
+    const ParamsT parameters;
 
     // 进料 + 判齐一口 [worker]：true = 已收齐（Device 随即 CAS 摘状态、投递交付）；false = 未齐
     // 继续收。公共入口非虚，CollectorLike 检查型号沿用本层 feed，不得用同名声明隐藏它。
@@ -143,21 +147,18 @@ private:
     virtual void onFeed(const FeedT &item, RxTime at) = 0;
 
 protected:
-    Collector() = default; // 契约基类不单独成活
+    explicit Collector(ParamsT parameters) : parameters(std::move(parameters)) {} // 契约基类不单独成活
     // 基类份额（shared_ptr<const Collector>）确会上行，但销毁恒经控制块记下的**具体删除器**
     // （具体工厂创建 shared_ptr 时确定），从不经基类指针 delete——故非虚仍安全；protected
     // 继续封死裸删门（`delete (Collector *)p` 编不过）。
     ~Collector() = default;
 
     // 一只 Collector 表示一次尝试，禁止复制和移动。生产链以 shared_ptr 持有，
-    // 具体型号收紧构造入口：族模板层按请求参数经型号静态工厂造完整的可写实例，makeSelf 供看门狗重试另造新斗。
+    // 型号以 const Params& 公开构造完整的可写实例：族模板层首次启动、看门狗重试都这样另造新斗。
     // **拷一只斗 = 连收集区一起拷**，而收集区正是 worker 在写的那块内存：拷到半截的攒料、
     // 拷到一半的帧、以及一次货真价实的数据竞争。**移动同理且更险**——搬走一只在跑的斗，留下的
     // 是个僵尸，而 worker 手里那根指针还指着原地。斗是"一次尝试"本身，它没有搬家的语义。
-    // makeSelf 正常返回时必须交出非空、独立的新对象，保留不可变指示区并备齐初始收集区；
-    // 不以空份额报告失败，也不能返回原对象。DoneFn 的空结果表示取消/失败，与工厂返回值不同。
-    // const 不限制读取哪些字段；实现不得读取或复制 worker 正在写的收集区，
-    // 才能与进料并发。工厂直接返回新对象的共享份额，不拷贝或移动已有 Collector。
+    // 重试只读旧斗的 parameters（出生即定、只读），不读取或复制 worker 正在写的收集区，故能与进料并发。
     // 两扇赋值门一并 delete：原地换值毫无意义——换斗即换对象。
     Collector(const Collector &) = delete;
     Collector &operator=(const Collector &) = delete;
@@ -172,7 +173,7 @@ protected:
 //    机制层的 C 是具体型号 Collector；族回调直接 move 交入，std::function 适配可调用签名，
 //    调用时具体 shared_ptr 隐式上转族基，不手写只转参的 lambda。
 //    等待器交回来的名单保留族类型，不读取型号帧数据，也不再转回设备消费。
-//    这里只需 `CollectorFamily`（继承 Collector<Feed>）；工厂与进料入口由接入流水线时的
+//    这里只需 `CollectorFamily`（继承 Collector<Feed, Params>）；工厂与进料入口由接入流水线时的
 //    `CollectorLike` 检查，完成回调不调用它们。
 //    **结局即载荷，不设两份账**：份额非空 ⟺ 这次 run 成了。二者恒完全相关（交付路的斗必非空
 //    ——CAS 成功时 expected 不被改写；停止路必空），故再挂一枚结局枚举就是第二份账，两账一旦
@@ -183,24 +184,22 @@ protected:
 //    寿命：CAS 摘桩后无写者，处理器与等待器可各持只读份额，最后一份释放时销毁。
 //    **空回调 = 调用方不关心结局**（如设备页手动前往）：Device 两路促发前都先判空。
 template <typename C>
-concept CollectorFamily = requires { typename C::Feed; } && std::derived_from<C, Collector<typename C::Feed>>;
+concept CollectorFamily = requires { typename C::Feed; typename C::Params; }
+    && std::derived_from<C, Collector<typename C::Feed, typename C::Params>>;
 
 template <CollectorFamily C>
 using DoneFn = std::function<void(std::shared_ptr<const C>)>;
 
 // ── NoWatchdogMs：Collector::timeoutMs 的哨兵——**本次 run 不设看门狗**。
 // timeoutMs() > 0 才启动看门狗；任何非正值都不设表，不只此哨兵。
-// 超时仍有当前尝试时，Device 由 makeSelf 创建新斗，CAS 替换成功后发送 buildStart 并重新计时；
+// 超时仍有当前尝试时，Device 以旧斗的 parameters 构造新斗，CAS 替换成功后发送 buildStart 并重新计时；
 // 重试不发送 buildStop，停机命令只走撤单路径。命令表是否为空不决定是否设表。
 // 是否需要重试及具体时限由型号给出；不设表的尝试只能自然完成或被取消。
 inline constexpr int NoWatchdogMs = -1;
 
-// feed 必须来自 Collector<Feed>：按成员指针类型检查声明来源，拒绝同名隐藏或重载。
-// makeSelf 检查 const 对象上的可调用性与 shared_ptr<自身> 返回类型，不检查函数体。
-// 实现契约：只读不可变指示区，正常返回非空、独立的新对象及初始收集区，不访问正在写的收集区。
-// concept 不证明返回值非空、对象独立或函数体并发安全。
+// feed 必须来自 Collector<Feed, Params>：按成员指针类型检查声明来源，拒绝同名隐藏或重载。
+// 必须能由 const Params& 构造：族模板层首次启动与看门狗重试共用这一入口。
 template <typename C>
-concept CollectorLike = CollectorFamily<C> && requires(const C c) {
-    requires std::same_as<decltype(&C::feed), decltype(&Collector<typename C::Feed>::feed)>;
-    { c.makeSelf() } -> std::same_as<std::shared_ptr<C>>;
-};
+concept CollectorLike = CollectorFamily<C>
+    && std::same_as<decltype(&C::feed), decltype(&Collector<typename C::Feed, typename C::Params>::feed)>
+    && std::constructible_from<C, const typename C::Params &>;

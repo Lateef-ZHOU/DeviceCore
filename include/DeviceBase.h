@@ -188,8 +188,8 @@ public:
 // 线程纪律：[主] 仅主线程；[worker] 仅 Handle 的收包线程，其执行方式由具体 Handle 决定。
 // 状态的交接：**指向物不可变、整块换指针**（State 那份 const）；斗的收集区判齐前 worker 独
 // 写，判齐即 CAS 摘状态——worker 此后不触斗，判齐前的写经 invokeMethod 队列 happens-before 移交
-// 主线程只读，斗上全程单写者。makeSelf 必须只读不可变指示区、不访问正在写入的收集区，
-// 才能与 worker 进料并发；这是实现契约，不是 const 自动提供的保证。
+// 主线程只读，斗上全程单写者。看门狗重试只读旧斗出生即定的 parameters、不访问正在写入的收集区，
+// 故能与 worker 进料并发。
 // 表（QTimer）是 [主] 资产：worker 判齐后必须投递回主线程停表 + 促发，这一跳无法省。
 // ============================================================
 // 族层拥有一台具体 Device，通过回调接入数据流与完成帧；机制层不认识族或官邸。
@@ -247,7 +247,7 @@ public:
     //
     // **形参是两件词汇，不是一份组装好的状态**：收本次 run 的那只斗 + 完成回调，状态怎么装是本层
     // 内政（State 私有嵌套）。斗由族模板层按请求参数现造并交出所有权，交入后调用方不得再写；
-    // 启动时不 makeSelf，看门狗重试才按其不可变配置 makeSelf 另造新斗。完成回调按值收 + move 入槽。
+    // 看门狗重试以同一份 parameters 另造新斗。完成回调按值收 + move 入槽。
     //
     // **谁消费谁判断**：本口是斗份额的消费者，空份额是"这单没下成"的正当回答，在此判空、返 false。
     [[nodiscard]] bool start(std::shared_ptr<CollectorT> collector, DoneFn<CollectorT> done,
@@ -365,9 +365,9 @@ private:
         if (!old)
             return; // run 已结（交付 / 拆机）→ 静默，表不再起
         // ② 造新斗 + 拷回调 → 组一份**全新的不可变状态**（原地改 old 是不行的：worker 正读着它）。
-        //    并发安全依赖 makeSelf 只读不可变指示区、不访问 worker 正在写的收集区，不能由 const 推出。
+        //    新斗只读旧斗出生即定的 parameters，不访问 worker 正在写的收集区。
         auto next = std::make_shared<const State>(
-            old->collector->makeSelf(), old->done);
+            std::make_shared<CollectorT>(old->collector->parameters), old->done);
         // ③ 比较并交换：**必须 CAS 不能 store**——若这中间 worker 已把状态摘走（交付）或
         //    teardown 已清空，store 会把一个已了结的 run **复活成僵尸**（无人再促发、无人再拆）。
         //    CAS 失败即那两件事之一已发生，本次重发作废，且**不再起表**。

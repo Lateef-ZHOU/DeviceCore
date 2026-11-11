@@ -21,8 +21,10 @@ struct NonCopyableFeed {
     NonCopyableFeed(const NonCopyableFeed &) = delete;
     int value;
 };
-class FeedProbe final : public Collector<NonCopyableFeed> {
+struct NoParams {};
+class FeedProbe final : public Collector<NonCopyableFeed, NoParams> {
 public:
+    FeedProbe() : Collector(NoParams{}) {}
     bool settled() const override { return calls == 1; }
     QList<QByteArray> buildStart() const override { return {}; }
     int timeoutMs() const override { return 0; }
