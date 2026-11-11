@@ -240,17 +240,14 @@ public:
         return HandleT::send(commands);
     }
 
-    // [主] 准入后启动或替换 run：装入调用方新造、独占的可写收集器，发启动，再设置看门狗。
+    // [主] 准入后启动或替换 run：按请求参数构造本型号收集器装入，发启动，再设置看门狗。
     // 返回 true 表示接受请求，不保证发送或收集成功；非正时限不重试，也不因发送失败撤单。
     // 主线程直接 store 替换未完成请求，不通知其旧回调；调用者负责旧等待的寿命。
     // worker 若已 CAS 摘走旧状态，已取得的完成权不受新请求影响，仍排队交付。
     //
-    // **形参是两件词汇，不是一份组装好的状态**：收本次 run 的那只斗 + 完成回调，状态怎么装是本层
-    // 内政（State 私有嵌套）。斗由族模板层按请求参数现造并交出所有权，交入后调用方不得再写；
-    // 看门狗重试以同一份 parameters 另造新斗。完成回调按值收 + move 入槽。
-    //
-    // **谁消费谁判断**：本口是斗份额的消费者，空份额是"这单没下成"的正当回答，在此判空、返 false。
-    [[nodiscard]] bool start(std::shared_ptr<CollectorT> collector, DoneFn<CollectorT> done,
+    // **形参是两件词汇，不是一份组装好的状态**：本次 run 的请求参数 + 完成回调，状态怎么装是本层
+    // 内政（State 私有嵌套）。首次启动与看门狗重试都由本层以同一份参数构造收集器。完成回调按值收 + move 入槽。
+    [[nodiscard]] bool start(const typename CollectorT::Params &parameters, DoneFn<CollectorT> done,
                              const std::shared_ptr<const DeviceLock> &lock)
     {
         if (!canEngage(lock))
@@ -258,12 +255,7 @@ public:
             Q_EMIT this->logMessage(QStringLiteral("设备未连接或正被占用，未启动"));
             return false;
         }
-        if (!collector)
-        {
-            Q_EMIT this->logMessage(QStringLiteral("启动请求缺少 Collector，未启动"));
-            return false;
-        }
-        const auto st = std::make_shared<const State>(std::move(collector), std::move(done));
+        const auto st = std::make_shared<const State>(std::make_shared<CollectorT>(parameters), std::move(done));
         run_.store(st);
         launch(st);
         return true;
