@@ -274,11 +274,13 @@ public:
     // 自然完成、拒收不是我们的锁段。验锁只 lockMatches 不含 isOpen（断联后拆机必须能走）：他人
     // 锁段一律无视（跨模块 kill 失效）；可反复调用（拆机各拍自幂等）——等待器的"撤单"
     // 正是靠这份幂等，对交付 / 取消 / 拒收回滚三条出路一视同仁。
-    void stop(const std::shared_ptr<const DeviceLock> &lock)
+    // 返回是否通过验锁并拆机（未连接时同样返回 true，只是不发停机命令）；族口撤单不看返回值。
+    bool stop(const std::shared_ptr<const DeviceLock> &lock)
     {
         if (!lockMatches(lock)) // 验锁：锁不对不拆机
-            return;
+            return false;
         teardown();
+        return true;
     }
 
 protected:
