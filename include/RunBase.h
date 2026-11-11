@@ -184,6 +184,7 @@ protected:
 //    递的是份额不是成品：Device 摘桩后对斗**零解引用**（型号成品什么形制、要不要取，全归
 //    使用端），机制层遂不认识任何成品类型。
 //    寿命：CAS 摘桩后无写者，处理器与等待器可各持只读份额，最后一份释放时销毁。
+//    **空回调 = 调用方不关心结局**（如设备页手动前往）：Device 两路促发前都先判空。
 template <typename C>
 concept CollectorFamily = requires { typename C::Feed; } && std::derived_from<C, Collector<typename C::Feed>>;
 

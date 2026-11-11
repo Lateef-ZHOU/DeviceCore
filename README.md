@@ -1,5 +1,7 @@
 # DeviceCore
 
+2026-11-11 用户定：停机不再以“有 run”为前提：Device<HandleT, CollectorT> 要求子类实现 stopCommands()；teardown 在连接打开时无条件发停机命令（有 run 用其 buildStop，否则用 stopCommands），断联（AboutToRelease）促停由 DeviceCore 负责。完成回调允许为空（空 = 调用方不关心结局）。云台族删除型号的 issueGoTo(optional) 与 issueStop 虚函数：设备页前往经 paramsFor 后走 Device::start（空回调、看门狗重发），停止即撤 run。
+
 2026-11-09 用户定（DAQ 第二步）：删除只读原型的 start 重载，start 只收调用方新造、独占的可写 Collector；启动不再 makeSelf，看门狗重试仍 makeSelf。
 
 2026-11-09 用户定：Device 新增 `start(std::shared_ptr<CollectorT>, done, lock)` 重载，接收调用方新造、独占的可写 Collector 直接装入运行槽，不在启动时 makeSelf；看门狗重试仍 makeSelf。原只读原型重载保留给尚未改造的 DAQ，改造完成后删除。准入、替换与看门狗语义不变。

@@ -293,6 +293,7 @@ protected:
 
 private:
     // [主] 只有主动关闭前同步撤单；迟到的 Released 不得取消后来启动的任务。
+    // 断联促停由本层负责：AboutToRelease 时连接仍开着，teardown 无条件发出停机命令。
     void onConnectionChanged(HandleCore::ResourcePhase phase)
     {
         if (phase == HandleCore::ResourcePhase::AboutToRelease)
@@ -338,16 +339,21 @@ private:
     }
 
     // [主] 停看门狗并原子摘走当前运行；只有拿到状态的调用者能撤销等待。
-    // 无条件尝试发送停机命令；连接/发送失败由 Handle 报告，仍须通知等待者本次已撤销。
+    // **停机命令无条件发**（连接打开时）：有 run 用它的 buildStop，没有 run 用型号的 stopCommands——
+    // 不以"有 run"推断设备在动（直发的扫描 / 旋转、意外情况下设备可能仍在运行），否则停止会被本层拦下。
+    // 连接已关时不发（析构里第二次 teardown 即此）；发送失败由 Handle 报告，仍须通知等待者本次已撤销。
     void teardown()
     {
         watchdog_.stop();
         const auto st = run_.exchange({}); // 摘状态 = 注销（一次性）
-        if (!st)
-            return;                          // 已拆完 / 本就没在跑
-        (void)HandleT::send(st->collector->buildStop());
-        st->done({});                        // 促发：**空斗 = 没成**（局部份额持过整调）
+        if (HandleT::isOpen())
+            (void)HandleT::send(st ? st->collector->buildStop() : stopCommands());
+        if (st && st->done)
+            st->done({});                    // 促发：**空斗 = 没成**（局部份额持过整调）
     }
+
+    // 本型号的停机命令，不依赖 run（无 run 时 teardown 发它）；子类必须实现，没有独立停机命令的型号返回空表。
+    [[nodiscard]] virtual QList<QByteArray> stopCommands() const = 0;
 
     // [主·看门狗到点] 状态在岗才动（run 已结 → 静默，表不再起）→ 造新斗、CAS 顶替（旧斗此后即便
     // 判齐，worker 的交付 CAS 也必失败 = 作废；若 worker 抢先摘走了状态，则本次 CAS 失败、交付照常）
@@ -402,8 +408,9 @@ private:
                 if (!this->run_.load())
                     this->watchdog_.stop();
                 this->onConsume(st->collector);
-                // 消费已提交；族级等待器只接收完成结果，失效也不撤回已提交的帧。
-                st->done(st->collector);
+                // 消费已提交；族级等待器只接收完成结果，失效也不撤回已提交的帧。空回调 = 调用方不关心结局。
+                if (st->done)
+                    st->done(st->collector);
             },
             Qt::QueuedConnection);
     }
