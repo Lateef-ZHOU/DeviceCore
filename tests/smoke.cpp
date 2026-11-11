@@ -27,30 +27,28 @@ public:
     QList<QByteArray> buildStart() const override { return {}; }
     int timeoutMs() const override { return 0; }
     int calls = 0;
-    const std::optional<NonCopyableFeed> *received = nullptr;
+    const NonCopyableFeed *received = nullptr;
     RxTime receivedAt{};
     int value = 0;
 private:
-    void onFeed(const std::optional<NonCopyableFeed> &item, RxTime at) override {
+    void onFeed(const NonCopyableFeed &item, RxTime at) override {
         ++calls;
         received = &item;
         receivedAt = at;
-        value = item->value;
+        value = item.value;
     }
 };
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
     FeedProbe probe;
-    const std::optional<NonCopyableFeed> empty;
-    const std::optional<NonCopyableFeed> sample(std::in_place, 42);
+    // 空输入由 Device::onData 判掉，Collector::feed 只收有效的一口：原物按引用交入 onFeed，已齐后不再吃料。
+    const NonCopyableFeed sample(42);
     const RxTime at = RxTime{} + std::chrono::seconds(7);
-    if (probe.feed(empty, at) || probe.calls != 0) return 10;
     if (!probe.feed(sample, at) || probe.calls != 1 || probe.received != &sample
         || probe.receivedAt != at || probe.value != 42) return 11;
-    const std::optional<NonCopyableFeed> later(std::in_place, 99);
+    const NonCopyableFeed later(99);
     if (!probe.feed(later, at) || probe.calls != 1 || probe.value != 42) return 12;
-    if (probe.feed(empty, at) || probe.calls != 1) return 13;
     ProbeDevice device;
     if (device.displayName != QStringLiteral("设备") || device.subtitle != QStringLiteral("规格") || device.holder()) return 4;
     const auto unnamed = std::make_shared<DeviceLock>(QString());

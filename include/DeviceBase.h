@@ -249,8 +249,7 @@ public:
     // 内政（State 私有嵌套）。斗由族模板层按请求参数现造并交出所有权，交入后调用方不得再写；
     // 启动时不 makeSelf，看门狗重试才按其不可变配置 makeSelf 另造新斗。完成回调按值收 + move 入槽。
     //
-    // **收份额原物，不收解引用后的视图**（本仓铁律"代客解引用害人害己"）：空份额是"这单没下成"的
-    // 正当回答（型号判参数不合时造不出斗），对它的响应写在**原语体内**：本口判空、返 false。
+    // **谁消费谁判断**：本口是斗份额的消费者，空份额是"这单没下成"的正当回答，在此判空、返 false。
     [[nodiscard]] bool start(std::shared_ptr<CollectorT> collector, DoneFn<CollectorT> done,
                              const std::shared_ptr<const DeviceLock> &lock)
     {
@@ -390,10 +389,13 @@ private:
     // Handle 在收包线程直接虚派发，不保存 this 闭包。
     void onData(const QByteArray &raw, RxTime at) final
     {
-        // ① 常态旁路：先于闲忙门，没在跑也照跑；交回的是**喂斗的那一口**（空 = 没有给斗的）
+        // ① 常态旁路：先于闲忙门，没在跑也照跑；交回的是**喂斗的那一口**（空 = 没有给斗的）。
+        //    本层是 onStream 结果的消费者：空即这口不进料，在此判掉，Collector 只收有效的一口。
         const auto fed = this->onStream(raw, at);
+        if (!fed)
+            return;
         auto st = this->run_.load(); // ② 状态促取：空 = idle 丢（CAS 要可写 expected，故非 const）
-        if (!st || !st->collector->feed(fed, at)) // ③ 原样交料；Collector 处理空输入与完成判定。
+        if (!st || !st->collector->feed(*fed, at)) // ③ 交料；Collector 处理完成判定。
             return;
         // ④ **一道闸**：CAS 摘状态 = 同时取得"投递权"与"这次 run 的结果所有权"。
         //    失败 = 状态已易主（看门狗换斗顶替 / teardown 清空），本斗已废、不投递（失败路

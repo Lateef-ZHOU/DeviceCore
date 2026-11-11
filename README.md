@@ -1,5 +1,7 @@
 # DeviceCore
 
+2026-11-11 用户定：原则修正：“代客解引用害人害己”的说法作废，改为“谁消费谁判断”——数据有效性由它的消费者判断，而消费者不一定是最终业务方。Device 是 onStream 结果的消费者，在 onData 判空（空即这口不进料）；Collector::feed / onFeed 改收 const FeedT&，只收有效的一口。Device::start 对空收集器份额判空同属此例。
+
 2026-11-11 用户定：停机不再以“有 run”为前提：Device<HandleT, CollectorT> 要求子类实现 stopCommands()；teardown 在连接打开时无条件发停机命令（有 run 用其 buildStop，否则用 stopCommands），断联（AboutToRelease）促停由 DeviceCore 负责。完成回调允许为空（空 = 调用方不关心结局）。云台族删除型号的 issueGoTo(optional) 与 issueStop 虚函数：设备页前往经 paramsFor 后走 Device::start（空回调、看门狗重发），停止即撤 run。
 
 2026-11-09 用户定（DAQ 第二步）：删除只读原型的 start 重载，start 只收调用方新造、独占的可写 Collector；启动不再 makeSelf，看门狗重试仍 makeSelf。
