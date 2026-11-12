@@ -197,7 +197,6 @@ template <HandleLike HandleT, CollectorLike CollectorT>
 class Device<HandleT, CollectorT> : public HandleT, public DeviceBase
 {
 public:
-    using CollectorType = CollectorT;
 
     // 运行槽持具体型号 Collector；启动和重试均按参数构造同型实例，族接口只在外部入口/结果处擦除。
 

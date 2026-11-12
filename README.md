@@ -14,6 +14,8 @@
 
 Device<H,C> 继承 H 与纯 C++ DeviceBase，直接重写 Handle 的 onData；具体官邸提供 final Qt 末端，唯一 QObject 来自 Handle。设备族模板继承 Device 并覆写 onStream / onConsume 虚函数，不保存这两个业务回调。onStream 与 Collector::feed 在收包线程执行；完成帧排队到主线程，先调用 onConsume，再通知等待器。onConsume 默认不消费。
 
+Device 不再提供 CollectorType 别名；族模板已经直接持有 Collector 模板参数，FamilyDevice::device() 返回 DeviceBase&，不再使用旧协变取型路径。2026-11-04 为该路径暂留别名的裁定已于 2026-11-12 完成清理。
+
 末端析构首句调用 PreDestruction，派生成员此时仍在。Device 层同步关闭 Handle：AboutToRelease 撤运行槽并释放锁，close 等待收包退出后再幂等清理本层；中间 Device/传输层析构不重复执行预析构。open/close 是继承的连接入口，start/send/stop 是运行与发令入口；具体 Qt 末端按需要提供元对象入口。
 
 Handle 的 connectionChanged(ResourcePhase) 在主动 close 促断前同步发 AboutToRelease，Device 据此撤单、释放锁。DeviceBase 声明纯虚 lockChanged(ResourcePhase)，Qt 末端直接以信号实现，只在锁槽实际变化后发 Acquired/Released；重复取得同一锁或重复归还不另通知。连接状态经 isOpen() 回读，占用状态经 optional<QString> holder() 回读（空值表示未占用）；qmlHolder 仅在 Qt 边界转换为 QVariant，不缓存状态。迟到的完成阶段不能撤掉新任务，已完成帧仍消费，退出不新增排空。
