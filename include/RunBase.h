@@ -3,7 +3,6 @@
 #include <concepts>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <utility>
 #include <QByteArray>
 #include <QList>
@@ -97,10 +96,8 @@ public:
     //     已齐则不再吃料，否则吃一口再判齐。空输入由 Device（onStream 结果的消费者）当场判掉，到不了这里。
     // 型号遂只写两件事：`onFeed` 怎么吃、`settled()` 怎么算齐；**"吃完了返什么"不必各写一遍**。
     //
-    // **前一道防不是防御，是承重**：`settled()` 问的是"数据此刻齐不齐"，而那是个**可回退**的
-    // 状态——国耀卡的 `count_` 见到新帧号就清零。是这道闸保证了"一旦收齐就不再进料"，收齐的斗
-    // 遂不会被后来的字节改写。今天 Device 判齐当场 CAS 摘桩、worker 此后见空槽即 idle，到不了
-    // 这道闸；但"到不了"与"调不着"是两回事，这里要的是后者。
+    // 完成冻结由本入口统一保证：settled 为真时不再调用 onFeed，后续输入不会改写收集结果。
+    // Device 判齐后以 CAS 摘走运行槽；即使调用方再次向已完成的 Collector 进料，本入口仍保持结果不变。
     // 每口料先检查 `settled()`；DAQ 读取通道元组是否存在，GMB 检查驻留时长，不重复计算数据产物。
     // `at` = 这一口料的**到料时刻**（Handle 层交上来，网口是内核盖的章）。
     // 谁用谁决定：采集卡族拿它盖帧时刻，云台族不用（判到位量的是**时长**，见 GMBCollector）。
