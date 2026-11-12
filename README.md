@@ -1,15 +1,5 @@
 # DeviceCore
 
-2026-11-11 用户定：参数模板下放到 RunBase：Collector<FeedT, ParamsT> 持有公开的 const ParamsT parameters；CollectorLike 要求能由 const Params& 构造；删除所有 makeSelf，看门狗重试以 std::make_shared<CollectorT>(旧斗->parameters) 另造新斗。两族收集器删除各自的 parameters_ 与 parameters() 读口。
-
-2026-11-11 用户定：原则修正：“代客解引用害人害己”的说法作废，改为“谁消费谁判断”——数据有效性由它的消费者判断，而消费者不一定是最终业务方。Device 是 onStream 结果的消费者，在 onData 判空（空即这口不进料）；Collector::feed / onFeed 改收 const FeedT&，只收有效的一口。Device::start 对空收集器份额判空同属此例。
-
-2026-11-11 用户定：停机不再以“有 run”为前提：Device<HandleT, CollectorT> 要求子类实现 stopCommands()；teardown 在连接打开时无条件发停机命令（有 run 用其 buildStop，否则用 stopCommands），断联（AboutToRelease）促停由 DeviceCore 负责。完成回调允许为空（空 = 调用方不关心结局）。云台族删除型号的 issueGoTo(optional) 与 issueStop 虚函数：设备页前往经 paramsFor 后走 Device::start（空回调、看门狗重发），停止即撤 run。
-
-2026-11-09 用户定（DAQ 第二步）：删除只读原型的 start 重载，start 只收调用方新造、独占的可写 Collector；启动不再 makeSelf，看门狗重试仍 makeSelf。
-
-2026-11-09 用户定：Device 新增 `start(std::shared_ptr<CollectorT>, done, lock)` 重载，接收调用方新造、独占的可写 Collector 直接装入运行槽，不在启动时 makeSelf；看门狗重试仍 makeSelf。原只读原型重载保留给尚未改造的 DAQ，改造完成后删除。准入、替换与看门狗语义不变。
-
 设备运行基类、Collector 收集契约、DeviceLock 和运行槽。Windows / Linux，C++20，CMake ≥ 3.28。
 
 ## 边界与依赖
@@ -18,17 +8,17 @@
 - 上游：[HandleCore](https://github.com/Lateef-ZHOU/HandleCore)。已有同名 CMake 目标时复用；否则 FetchContent 拉取固定完整提交。
 - 本仓库不依赖 LiDAR_DataACQ 源码、应用目录或设备型号；不包含第三方二进制。
 - 仅依赖 Qt Core 与 HandleCore 基础模块，不启用串口、Pcap、仿真传输，也不依赖 Qt GUI/QML。
-- 原型与完成结果只读共享；运行区由 makeSelf 独立创建。派生设备析构须先停止访问派生状态的执行源，再清理状态。
+- 下单交不可变请求参数；Device 在首次启动及重试时以同一份参数另造可写 Collector，完成后只读共享。派生设备析构须先停止访问派生状态的执行源，再清理状态。
 
 ## 继承、所有权与线程契约
 
-Device<H,C> 继承 H 与非 QObject 的 DeviceBase，直接重写上传 onData；具体官邸提供 final Qt 末端，构造时接收名称、onStream 与 onConsume 回调。流回调在 Handle 线程执行，完成消费在主线程先于等待器通知执行；无需消费的族传空消费回调。Device 不认识设备族，不再提供 onCompleted/onStream 业务虚口。
+Device<H,C> 继承 H 与纯 C++ DeviceBase，直接重写 Handle 的 onData；具体官邸提供 final Qt 末端，唯一 QObject 来自 Handle。设备族模板继承 Device 并覆写 onStream / onConsume 虚函数，不保存这两个业务回调。onStream 与 Collector::feed 在收包线程执行；完成帧排队到主线程，先调用 onConsume，再通知等待器。onConsume 默认不消费。
 
-拥有者在自身派生状态销毁前删除 Device；末端析构首句调用 PreDestruction，先同步停止 Handle，再撤销运行/锁。中间 Device/传输层析构不重复执行预析构；移除 retiring，名单通过 QObject::destroyed 在族对象清理前移除。QObject 父子所有权仅作构造失败兜底。open/close 是继承的连接入口，start/send/stop 是采集与发令入口，均为 C++ 入口，不是 Qt 槽。setOnConsume 仅用于首次启动前的同步安装和关闭后的主线程清空，不支持运行中并发更换。
+末端析构首句调用 PreDestruction，派生成员此时仍在。Device 层同步关闭 Handle：AboutToRelease 撤运行槽并释放锁，close 等待收包退出后再幂等清理本层；中间 Device/传输层析构不重复执行预析构。open/close 是继承的连接入口，start/send/stop 是运行与发令入口；具体 Qt 末端按需要提供元对象入口。
 
-2026-11-02：Handle 的 connectionChanged(ResourcePhase) 中，AboutToRelease 在 stop 促断前同步触发 Device 撤单/释放锁。DeviceBase 声明纯虚 lockChanged(ResourcePhase)，Qt 末端直接以信号实现，只在锁槽实际变化后发 Acquired/Released；重复取得同一锁或重复归还不另通知。删除 statusChanged 和 finished 中转。isOpen/isLocked/holder 为按需回读属性，不把枚举冒充布尔属性的 NOTIFY，不保存另一份连接或锁状态。迟到的完成阶段不能撤掉新任务，已完成帧仍消费，退出不新增排空。
+Handle 的 connectionChanged(ResourcePhase) 在主动 close 促断前同步发 AboutToRelease，Device 据此撤单、释放锁。DeviceBase 声明纯虚 lockChanged(ResourcePhase)，Qt 末端直接以信号实现，只在锁槽实际变化后发 Acquired/Released；重复取得同一锁或重复归还不另通知。连接状态经 isOpen() 回读，占用状态经 optional<QString> holder() 回读（空值表示未占用）；qmlHolder 仅在 Qt 边界转换为 QVariant，不缓存状态。迟到的完成阶段不能撤掉新任务，已完成帧仍消费，退出不新增排空。
 
-本轮验证：Windows Qt 6.11.2 / MSVC 与 Linux Qt 6.12.0 / GCC 独立构建、公开头与 CTest 1/1 通过；Windows 主程序设备生命周期回归通过（31.74 秒），覆盖同步撤单、换参重连、旧 finished 不取消新任务、看门狗继续重试及完成帧保留。Windows 独立构建从远端固定拉取 HandleCore 3470a1d；无实物验证。
+此前验证记录（并非本次注释整理结果）：Windows Qt 6.11.2 / MSVC 与 Linux Qt 6.12.0 / GCC 独立构建、公开头与 CTest 1/1 通过；Windows 主程序设备生命周期回归通过（31.74 秒），覆盖同步撤单、换参重连、旧 finished 不取消新任务、看门狗继续重试及完成帧保留。Windows 独立构建从远端固定拉取 HandleCore 3470a1d；无实物验证。
 
 
 ## 独立构建和验证
@@ -56,6 +46,20 @@ target_link_libraries(my_app PRIVATE Lidar::DeviceCore)
 ```
 
 从仓库提交列表选择固定版本；示例占位值必须替换，不使用浮动分支保证可复现。多个模块共用已有上游目标，应用若需覆盖上游版本应先统一声明并创建它们。标准 `FETCHCONTENT_SOURCE_DIR_LIDAR_模块名`（模块名大写无分隔）可用于本地开发，发布验证应取消覆盖并实际拉取远端。
+
+## 近期结构变更记录（历史）
+
+以下为改造过程中的阶段记录，包含已被后续提交替代的接口；现行用法以本文前面的契约及源码为准。
+
+2026-11-11 用户定：参数模板下放到 RunBase：Collector<FeedT, ParamsT> 持有公开的 const ParamsT parameters；CollectorLike 要求能由 const Params& 构造；删除所有 makeSelf，看门狗重试以 std::make_shared<CollectorT>(旧斗->parameters) 另造新斗。两族收集器删除各自的 parameters_ 与 parameters() 读口。
+
+2026-11-11 用户定：原则修正：“代客解引用害人害己”的说法作废，改为“谁消费谁判断”——数据有效性由它的消费者判断，而消费者不一定是最终业务方。Device 是 onStream 结果的消费者，在 onData 判空（空即这口不进料）；Collector::feed / onFeed 改收 const FeedT&，只收有效的一口。Device::start 对空收集器份额判空同属此例。
+
+2026-11-11 用户定：停机不再以“有 run”为前提：Device<HandleT, CollectorT> 要求子类实现 stopCommands()；teardown 在连接打开时无条件发停机命令（有 run 用其 buildStop，否则用 stopCommands），断联（AboutToRelease）促停由 DeviceCore 负责。完成回调允许为空（空 = 调用方不关心结局）。云台族删除型号的 issueGoTo(optional) 与 issueStop 虚函数：设备页前往经 paramsFor 后走 Device::start（空回调、看门狗重发），停止即撤 run。
+
+2026-11-09 用户定（DAQ 第二步）：删除只读原型的 start 重载，start 只收调用方新造、独占的可写 Collector；启动不再 makeSelf，看门狗重试仍 makeSelf。
+
+2026-11-09 用户定：Device 新增 `start(std::shared_ptr<CollectorT>, done, lock)` 重载，接收调用方新造、独占的可写 Collector 直接装入运行槽，不在启动时 makeSelf；看门狗重试仍 makeSelf。原只读原型重载保留给尚未改造的 DAQ，改造完成后删除。准入、替换与看门狗语义不变。
 
 ## 来源与许可
 

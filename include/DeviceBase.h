@@ -181,7 +181,7 @@ public:
 //     装（start）/ 换（restart CAS）/ 清（teardown exchange），worker 只 load 与**判齐 CAS
 //     摘走**。摘走 = 注销 = 独占交付权，一个动作办三件事，无独立注销仪式、无两份账。
 //   · watchdog_ [主]：到点 = 本次尝试作废，造新斗 + CAS 换状态 + 重发 + 再起表（restart）。
-// 型号知识全在具体 Collector（命令 / 时限 / 判齐 / 攒料 / 造下一只，见 RunBase.h）——设备零型号
+// 型号知识全在具体 Collector（命令 / 时限 / 判齐 / 攒料 / 请求参数，见 RunBase.h）——设备零型号
 // 知识；**成品形制亦然**：交付递的是斗份额本身，成品什么形制、怎么取，归具体收集器自定读口与
 // 使用端，机制层不认识任何成品类型。
 //
@@ -192,14 +192,14 @@ public:
 // 故能与 worker 进料并发。
 // 表（QTimer）是 [主] 资产：worker 判齐后必须投递回主线程停表 + 促发，这一跳无法省。
 // ============================================================
-// 族层拥有一台具体 Device，通过回调接入数据流与完成帧；机制层不认识族或官邸。
+// 族模板层继承 Device，通过 onStream / onConsume 虚函数接入数据流与完成帧；机制层不认识族或官邸。
 template <HandleLike HandleT, CollectorLike CollectorT>
 class Device<HandleT, CollectorT> : public HandleT, public DeviceBase
 {
 public:
     using CollectorType = CollectorT;
 
-    // 运行槽持具体型号 Collector；工厂和重试保持同型，族接口只在外部入口/结果处擦除。
+    // 运行槽持具体型号 Collector；启动和重试均按参数构造同型实例，族接口只在外部入口/结果处擦除。
 
     Device(QString name, QString subtitle, QObject *parent = nullptr)
         : DeviceBase(std::move(name), std::move(subtitle))
@@ -278,8 +278,8 @@ protected:
     void PreDestruction() noexcept override
     {
         HandleT::close();
-        // 所有者在自身预析构内销毁本对象；回调依赖仍在，DAQ 处理线程已退出。
-        // 借用者先撤销，再收本地等待；停机命令交给 Handle，发送失败不妨碍本地撤销。
+        // 末端析构体内接续到此，派生状态仍在；close 已同步撤单、释锁并等收包线程退出。
+        // 再清本地运行槽和锁；已关闭时不发停机命令，重复清理保持幂等。
         teardown();
         DeviceBase::PreDestruction();
     }
@@ -298,7 +298,7 @@ private:
 
     // ── State：一次 run 的状态 = **在跑的那只斗 + 完成回调**，两员一体的裸聚合。
     //    **私有嵌套是设计**：run 状态怎么装是设备内政——运行层契约（RunBase.h）与下单件
-    //    （族口 begin）的词汇里只有"一只斗 + 一个完成回调"两件，谁都不需要认识这个类型。
+    //    （族口 begin）的词汇里只有"请求参数 + 一个完成回调"两件，谁都不需要认识这个类型。
     //
     // **不可变快照 + 整块换指针**：主线程从不原地改，只把新造好的整份
     // 换上去；worker 只 load 与 CAS。指向物 const 即"读者拿到的那份不会在脚下变"。
@@ -310,8 +310,8 @@ private:
     // **为什么是一个槽，而不是「回调」与「斗」各一个**："run 进行中"这件事若有两份账，交付就
     // 需要两道闸，两道闸之间的语句顺序极其讲究、且顺序的理由一年后没人记得。一槽则**只剩一道
     // 闸**：CAS 摘走状态即同时取得"投递权"与"结果所有权"。交付与 teardown 抢同一个槽，谁摘到
-    // 归谁——交付先到，teardown 见空即返（不发 buildStop：已收场的 run 本就不该发）；teardown
-    // 先到，worker 的 CAS 失败、那只斗作废。没有"两边各走一半"的中间态。
+    // 归谁——交付先到，teardown 不再通知旧回调，已取得完成权的帧仍排队消费；teardown
+    // 先到，worker 的 CAS 失败、那只斗作废。停机命令另按连接状态发送，不依赖槽是否为空。
     struct State
     {
         std::shared_ptr<CollectorT> collector; // 指示区 const、收集区 [仅 worker] 可写
@@ -421,4 +421,4 @@ private:
     // 末端析构首句调用 PreDestruction，保护上传所访问的 Device 与官邸状态。
 };
 
-// 族接口经组合持有的 Device 启动与撤单；单据和等待器见 TaskCore 的 DeviceCoro.h。
+// 族接口经继承的 Device 启动与撤单；单据和等待器见 TaskCore 的 DeviceCoro.h。
